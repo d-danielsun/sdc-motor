@@ -1,0 +1,112 @@
+// Portas: tudo que o núcleo precisa do mundo. Adaptadores implementam; fakes também.
+import type {
+  AsaasCustomer, AsaasPayment, AsaasWebhook, AuditDirection, Charge, ChargeStatus, CustomerMap,
+  DiffPolicy, ExceptionType, Money, OdooInvoice, OdooInvoiceLine, OdooPartner, OdooPaymentResult,
+  ProcessStatus, StoredAsaasEvent, StoredOdooEvent,
+} from "./types.js";
+
+export interface OdooClient {
+  searchInvoices(q: { writeDateAfter?: string | null; invoiceDateFrom?: string | null }): Promise<OdooInvoice[]>;
+  getInvoice(id: number): Promise<OdooInvoice | null>;
+  getOpenPaymentTermLines(moveId: number): Promise<OdooInvoiceLine[]>;
+  getPartner(id: number): Promise<OdooPartner | null>;
+  registerPayment(p: { moveLineId: number; amount: Money; paymentDate: string }): Promise<OdooPaymentResult>;
+}
+
+export interface AsaasClient {
+  findCustomerByExternalRef(ref: string): Promise<AsaasCustomer | null>;
+  createCustomer(c: {
+    name: string; cpfCnpj: string; email?: string | null; phone?: string | null;
+    externalReference: string; notificationDisabled: boolean;
+  }): Promise<AsaasCustomer>;
+  updateCustomer(id: string, patch: { notificationDisabled?: boolean }): Promise<AsaasCustomer>;
+  createPayment(p: {
+    customer: string; value: Money; dueDate: string; externalReference: string; description: string;
+  }): Promise<AsaasPayment>;
+  getPayment(id: string): Promise<AsaasPayment | null>;
+  deletePayment(id: string): Promise<void>;
+  listPayments(f: { status?: string; paymentDateFrom?: string; externalReference?: string }): AsyncIterable<AsaasPayment>;
+  getWebhook(id: string): Promise<AsaasWebhook | null>;
+  listWebhooks(): Promise<AsaasWebhook[]>;
+  createWebhook(w: { name: string; url: string; email: string; authToken: string; events: string[] }): Promise<AsaasWebhook>;
+  updateWebhook(id: string, patch: { interrupted?: boolean; enabled?: boolean }): Promise<AsaasWebhook>;
+}
+
+export interface Repo {
+  config: {
+    get<T = unknown>(key: string): Promise<T | null>;
+    set(key: string, value: unknown): Promise<void>;
+  };
+  customers: {
+    getByPartner(odooPartnerId: number): Promise<CustomerMap | null>;
+    upsert(c: Omit<CustomerMap, "id">): Promise<CustomerMap>;
+    listSynced(): Promise<CustomerMap[]>;
+  };
+  charges: {
+    getByMoveLine(moveLineId: number): Promise<Charge | null>;
+    getByExternalRef(ref: string): Promise<Charge | null>;
+    getByAsaasPayment(asaasPaymentId: string): Promise<Charge | null>;
+    listByMove(moveId: number): Promise<Charge[]>;
+    insert(c: Omit<Charge, "id">): Promise<Charge>;
+    setStatus(id: number, status: ChargeStatus, patch?: Partial<Pick<Charge, "asaasPaymentId" | "bankSlipUrl" | "nossoNumero" | "asaasInvoiceNumber">>): Promise<void>;
+    countOpen(): Promise<number>;
+  };
+  asaasEvents: {
+    insert(e: { asaasEventId: string; eventType: string; asaasPaymentId: string | null; payload: unknown }): Promise<boolean>;
+    pending(limit: number, now: Date): Promise<StoredAsaasEvent[]>;
+    mark(id: number, status: ProcessStatus, o?: { error?: string | null; attempts?: number; nextAttemptAt?: Date | null }): Promise<void>;
+    lastReceivedAt(): Promise<Date | null>;
+    findByPayment(asaasPaymentId: string, eventType: string): Promise<StoredAsaasEvent | null>;
+    reset(id: number): Promise<void>;
+  };
+  odooEvents: {
+    insert(e: { odooModel: string; odooId: number; odooAction: string | null; payload: unknown; status?: ProcessStatus }): Promise<number>;
+    pending(limit: number, now: Date): Promise<StoredOdooEvent[]>;
+    mark(id: number, status: ProcessStatus, o?: { error?: string | null; attempts?: number; nextAttemptAt?: Date | null }): Promise<void>;
+    reset(id: number): Promise<void>;
+  };
+  reconciliations: {
+    insert(r: {
+      chargeId: number; odooPaymentId: number | null; amountReceived: Money; amountExpected: Money;
+      netValue: Money | null; diffPolicy: DiffPolicy | null; paymentDate: string | null; creditDate: string | null;
+    }): Promise<void>;
+    existsForCharge(chargeId: number): Promise<boolean>;
+  };
+  exceptions: {
+    open(e: { type: ExceptionType; refTable?: string; refId?: number; detail?: unknown }): Promise<void>;
+    hasOpen(type: ExceptionType, refTable?: string, refId?: number): Promise<boolean>;
+    get(id: number): Promise<{ id: number; type: ExceptionType; status: "open" | "resolved" | "ignored"; refTable: string | null; refId: number | null; detail: unknown } | null>;
+    setStatus(id: number, status: "open" | "resolved" | "ignored", by: string | null): Promise<void>;
+  };
+  watermarks: {
+    get(key: string): Promise<string | null>;
+    set(key: string, isoTs: string): Promise<void>;
+  };
+  audit: {
+    log(e: {
+      direction: AuditDirection; endpoint: string; requestSummary?: unknown;
+      responseStatus?: number; responseSummary?: unknown; durationMs?: number;
+    }): Promise<void>;
+    purgeOlderThan(days: number): Promise<number>;
+  };
+}
+
+export interface Clock {
+  now(): Date;
+  today(): string; // YYYY-MM-DD em America/Sao_Paulo
+}
+
+export type Logger = (msg: string, ctx?: Record<string, unknown>) => void;
+
+export interface Deps {
+  repo: Repo;
+  odoo: OdooClient;
+  asaas: AsaasClient;
+  clock: Clock;
+  log: Logger;
+}
+
+/** Erro de borda que vale retry (5xx, timeout, rede). Adaptadores marcam; o núcleo só lê. */
+export interface TransientError extends Error { transient: true }
+export const isTransient = (e: unknown): e is TransientError =>
+  typeof e === "object" && e !== null && (e as { transient?: unknown }).transient === true;

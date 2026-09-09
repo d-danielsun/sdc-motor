@@ -1,0 +1,40 @@
+# Postgres local do motor. Mesmo schema que vai pro Supabase — é a prova de portabilidade (AC14).
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: sdc-motor-postgres
+    environment:
+      POSTGRES_USER: motor
+      POSTGRES_PASSWORD: motor
+      POSTGRES_DB: motor
+    ports:
+      - "55432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U motor -d motor"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  motor:                       # docker compose --profile motor up  → motor + Postgres, sem Supabase
+    profiles: ["motor"]
+    build: .
+    container_name: sdc-motor
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://motor:motor@postgres:5432/motor
+      ASAAS_URL: ${ASAAS_URL:-https://api-sandbox.asaas.com/v3}
+      ASAAS_API_KEY: ${ASAAS_API_KEY}
+      ASAAS_WEBHOOK_TOKEN: ${ASAAS_WEBHOOK_TOKEN}
+      ODOO_URL: ${ODOO_URL:-}
+      ODOO_DB: ${ODOO_DB:-}
+      ODOO_API_KEY: ${ODOO_API_KEY:-}
+      ODOO_WEBHOOK_KEY: ${ODOO_WEBHOOK_KEY}
+      CONSOLE_TOKEN: ${CONSOLE_TOKEN:-}
+      PORT: "8787"
+    ports:
+      - "8787:8787"
+volumes:
+  pgdata:

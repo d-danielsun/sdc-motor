@@ -1,0 +1,32 @@
+{
+  "name": "sdc-motor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Motor de cobrança Odoo ↔ Asaas da SDC (Salvei) — núcleo portátil, roda em Supabase hoje e em container amanhã",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run test/unit",
+    "test:sandbox": "vitest run test/sandbox",
+    "db:up": "docker compose up -d postgres",
+    "db:migrate": "tsx src/cli/migrate.ts",
+    "db:reset": "docker compose down -v && docker compose up -d postgres && sleep 3 && tsx src/cli/migrate.ts",
+    "dev": "tsx watch src/app/main.ts",
+    "start": "node dist/app/main.js",
+    "job": "tsx src/cli/job.ts"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.14.0",
+    "hono": "^4.7.0",
+    "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/pg": "^8.11.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.1.0"
+  }
+}
