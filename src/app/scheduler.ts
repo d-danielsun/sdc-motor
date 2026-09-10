@@ -36,7 +36,9 @@ export async function runJob(deps: Deps, name: JobName, extras: JobExtras = {}):
     const error = (e as Error).message;
     deps.log(`job ${name} falhou`, { error });
     try {
-      const exc = await deps.repo.exceptions.openOnce({ type: "integration_error", refTable: "jobs", detail: { job: name, error, at: deps.clock.now().toISOString() } });
+      // `jobs:<nome>` e não `jobs`: com a ref genérica, os quatro jobs dividiam UMA exceção, e o
+      // e-mail de um job levava para a exceção que descrevia o erro de outro.
+      const exc = await deps.repo.exceptions.openOnce({ type: "integration_error", refTable: `jobs:${name}`, detail: { job: name, error, at: deps.clock.now().toISOString() } });
       // O quarto alerta. Um job que falha de forma permanente (chave vencida, base expirada)
       // para uma parte do ciclo em silêncio — este e-mail é o que quebra o silêncio.
       const consoleUrl = await deps.repo.config.get<string | null>("CONSOLE_PUBLIC_URL").catch(() => null);

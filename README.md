@@ -59,6 +59,11 @@ Console.
 
 `worker` (1 min: eventos do Odoo e do Asaas, lotes de 20) · `sync-invoices` (15 min, varredura de segurança da ida, páginas de 200) · `reconcile-daily` (06:00 BRT, relê RECEIVED e RECEIVED_IN_CASH dos últimos `RECONCILE_LOOKBACK_DAYS`, e apaga `audit_log`/eventos processados > 90 dias) · `watchdog` (15 min: fila interrompida, penalidades, silêncio, idade da key). Um job nunca sobrepõe a si mesmo. Uma vez por ambiente: `WEBHOOK_PUBLIC_URL=… ALERT_EMAIL=… npm run job -- register-asaas-webhook`.
 
+O agendador é **em processo**: vale enquanto o processo estiver de pé. Num host que desliga o
+processo sem tráfego, como Cloud Run com escala a zero, nada disso roda e o motor fica saudável
+sem fazer nada. Nesse caso, um cron externo chama `POST /api/v1/jobs/:name` com o `CONSOLE_TOKEN`
+— é o único uso que sobrou desse token. Etapa 4b do `docs/RUNBOOK-R1.md` tem os intervalos.
+
 ## Alertas críticos
 
 Quando a fila do Asaas é interrompida, nenhum pagamento chega e nenhuma baixa acontece. O motor
@@ -78,9 +83,15 @@ O e-mail diz o que aconteceu, o que o motor já tentou sozinho e traz o link dir
 exceção no console. Sem `RESEND_API_KEY` o motor sobe igual, com o canal em no-op.
 
 O dedupe é do banco e a janela é **deslizante**, não balde fixo: balde de seis horas manda um
-alerta às 5h59 e outro às 6h01. A reserva da janela é uma única instrução SQL, o que também
-serve de trava entre processos concorrentes — dois motores no mesmo instante mandam um e-mail
-só, e há teste que prova isso com oito chamadas simultâneas.
+alerta às 5h59 e outro às 6h01, e é por isso que um índice único não resolveria.
+
+Dois motores no mesmo instante mandam um e-mail só, e isso custou uma lição. A primeira versão
+era uma única instrução `insert ... where not exists`, com a explicação de que isso bastava como
+trava. Não basta: no nível de isolamento padrão do Postgres essa cláusula não pega lock de
+predicado, e os dois processos inserem. Travar dentro da mesma instrução também não resolve,
+porque o retrato que ela lê é tirado antes de ela bloquear. A reserva agora toma um advisory lock
+por chave numa instrução separada, e o teste aquece o pool de conexões de propósito — sem isso ele
+passava com a implementação errada.
 
 Duas trocas conscientes. A linha em `alerts_sent` registra a **tentativa**, não o sucesso: se o
 processo morrer entre reservar e enviar, aquele aviso se perde e o próximo sai na janela

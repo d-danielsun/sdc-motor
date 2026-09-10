@@ -2,7 +2,7 @@
 // protege: um canal ausente não quebra o motor, um 500 do Resend vira erro legível, e o envio
 // não fica pendurado além do prazo.
 import { describe, expect, it, vi } from "vitest";
-import { ENVIO_TIMEOUT_MS, createNoopNotifier, createResendNotifier, parseDestinatarios } from "../../src/adapters/notify/resend.js";
+import { ENVIO_TIMEOUT_MS, MAX_DESTINATARIOS, createNoopNotifier, createResendNotifier, paraHtml, parseDestinatarios } from "../../src/adapters/notify/resend.js";
 import { FakeNotifier } from "../../src/adapters/notify/fake.js";
 import { alertaChaveVencendo, alertaFilaInterrompida, alertaJobFalhou, alertaSilencio, SILENCIO_LONGO_MINUTOS, SILENCIO_PADRAO_MINUTOS } from "../../src/core/usecases/notify.js";
 
@@ -15,6 +15,25 @@ describe("lista de destinatários", () => {
     expect(parseDestinatarios("")).toEqual([]);
     expect(parseDestinatarios(null)).toEqual([]);
     expect(parseDestinatarios("nao-e-email, outro")).toEqual([]);
+  });
+  it("corta a lista no limite do Resend em vez de deixar o envio falhar sempre", () => {
+    const muitos = Array.from({ length: 80 }, (_, i) => `p${i}@x.com`).join(",");
+    expect(parseDestinatarios(muitos)).toHaveLength(MAX_DESTINATARIOS);
+    expect(MAX_DESTINATARIOS).toBe(50);
+  });
+});
+
+describe("corpo HTML", () => {
+  it("o link vira âncora de verdade, e o texto do servidor é escapado", () => {
+    const html = paraHtml("linha um\nlinha dois\nhttps://m.exemplo.com.br/console/#/excecoes/7", "https://m.exemplo.com.br/console/#/excecoes/7");
+    expect(html).toContain('<a href="https://m.exemplo.com.br/console/#/excecoes/7">');
+    expect(html).toContain("<br>");
+    expect(html).not.toContain("#/excecoes/7</p>");   // a URL crua não fica sobrando no texto
+    // nome de cliente com HTML não pode virar marcação
+    const perigoso = paraHtml('cliente <script>alert(1)</script> & "cia"', null);
+    expect(perigoso).not.toContain("<script>");
+    expect(perigoso).toContain("&lt;script&gt;");
+    expect(perigoso).toContain("&amp;");
   });
 });
 
@@ -31,9 +50,9 @@ describe("adaptador do Resend", () => {
     expect(chamadas[0]?.url).toBe("https://api.resend.com/emails");
     const h = chamadas[0]?.init.headers as Record<string, string>;
     expect(h.authorization).toBe("Bearer re_chave");
-    expect(JSON.parse(String(chamadas[0]?.init.body))).toEqual({
-      from: "motor@exemplo.com.br", to: ["a@x.com", "b@y.com"], subject: "assunto", text: "corpo do alerta",
-    });
+    const corpo = JSON.parse(String(chamadas[0]?.init.body));
+    expect(corpo).toMatchObject({ from: "motor@exemplo.com.br", to: ["a@x.com", "b@y.com"], subject: "assunto", text: "corpo do alerta" });
+    expect(Object.keys(corpo).sort()).toEqual(["from", "html", "subject", "text", "to"]);   // text E html
     expect(n.canal).toBe("resend");
     expect(n.destinatarios).toEqual(["a@x.com", "b@y.com"]);
   });
@@ -82,6 +101,7 @@ describe("canal no-op", () => {
     const n = createNoopNotifier((msg, ctx) => linhas.push({ msg, ctx }), "RESEND_API_KEY ausente");
     await expect(n.entregar({ assunto: "fila parada", corpo: "x", link: null })).resolves.toBeUndefined();
     expect(n.canal).toBe("no-op");
+    expect(n.ativo).toBe(false);   // é o que faz o núcleo nem reservar janela
     expect(n.destinatarios).toEqual([]);
     expect(linhas[0]?.msg).toContain("no-op");
     expect(linhas[0]?.ctx).toMatchObject({ motivo: "RESEND_API_KEY ausente", assunto: "fila parada" });

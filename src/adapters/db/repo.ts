@@ -169,7 +169,11 @@ export function createPgRepo(pool: pg.Pool, lockPool: pg.Pool = pool): Repo {
         // Já havia uma aberta: devolve o id DELA, porque o alerta linka o console de qualquer jeito.
         const existente = await one<{ id: string }>(`select id from exceptions where status='open' and type=$1
           and ref_table is not distinct from $2 and ref_id is not distinct from $3 order by id limit 1`, p.slice(0, 3));
-        return { id: Number(existente?.id ?? 0), nova: false };
+        if (existente) return { id: Number(existente.id), nova: false };
+        // Corrida: alguém resolveu a exceção entre o insert e o select. Insere de novo em vez de
+        // devolver id 0, que viraria um link para /excecoes/0 no e-mail de alerta.
+        const segunda = await db.query<{ id: string }>(`insert into exceptions (type, ref_table, ref_id, detail) values ($1,$2,$3,$4::jsonb) returning id`, p);
+        return { id: Number(segunda.rows[0]!.id), nova: true };
       },
       async hasOpen(type, refTable, refId) {
         return (await one("select 1 from exceptions where status='open' and type=$1 and ($2::text is null or ref_table=$2) and ($3::bigint is null or ref_id=$3) limit 1", [type, refTable ?? null, refId ?? null])) !== null;
@@ -191,17 +195,43 @@ export function createPgRepo(pool: pg.Pool, lockPool: pg.Pool = pool): Repo {
     },
     alerts: {
       async reservar(a) {
-        // UMA statement: o `where not exists` é avaliado sob o mesmo snapshot do insert, então
-        // dois processos no mesmo instante não inserem os dois. Janela DESLIZANTE (`now() -
-        // intervalo`), não balde fixo — balde manda um alerta 5h59 e outro 6h01.
-        const r = await db.query<{ id: string }>(
-          `insert into alerts_sent (alert_key, channel, recipients, ok)
-           select $1, $2, $3, false
-           where not exists (select 1 from alerts_sent where alert_key = $1 and sent_at > now() - ($4 || ' minutes')::interval)
-           returning id`,
-          [a.alertKey, a.channel, a.recipients, String(a.janelaMinutos)],
-        );
-        return r.rows[0] ? Number(r.rows[0].id) : null;
+        // DUAS statements numa transação, e a ordem é o ponto todo.
+        //
+        // A versão anterior era uma statement só (`insert ... where not exists`) com a
+        // afirmação de que isso bastava como trava entre processos. É FALSO no READ COMMITTED,
+        // e o verificador da #14 provou: `where not exists` não pega lock de predicado, então
+        // dois processos avaliam "não existe" e os dois inserem — medido, 2 linhas para o
+        // mesmo evento, e até 8 com 8 conexões.
+        //
+        // Travar dentro da MESMA statement também não resolve, e essa é a parte contraintuitiva:
+        // o snapshot da statement é tirado ANTES de ela bloquear no lock, então quando ela
+        // acorda continua sem ver a linha que o outro processo commitou. Medido também.
+        //
+        // Aqui a trava vem numa statement separada. O insert seguinte tira um snapshot NOVO,
+        // já depois do lock, e enxerga a linha do outro. `pg_advisory_xact_lock` solta sozinho
+        // no commit, então não há lock vazado se algo estourar no meio.
+        //
+        // A janela é DESLIZANTE (`now() - intervalo`), não balde fixo: balde manda um alerta
+        // às 5h59 e outro às 6h01. É por isso que um unique index não serve aqui.
+        const client = await pool.connect();
+        try {
+          await client.query("begin");
+          await client.query("select pg_advisory_xact_lock(hashtext($1))", [a.alertKey]);
+          const r = await client.query<{ id: string }>(
+            `insert into alerts_sent (alert_key, channel, recipients, ok)
+             select $1, $2, $3, false
+             where not exists (select 1 from alerts_sent where alert_key = $1 and sent_at > now() - ($4 || ' minutes')::interval)
+             returning id`,
+            [a.alertKey, a.channel, a.recipients, String(a.janelaMinutos)],
+          );
+          await client.query("commit");
+          return r.rows[0] ? Number(r.rows[0].id) : null;
+        } catch (e) {
+          await client.query("rollback").catch(() => undefined);
+          throw e;
+        } finally {
+          client.release();
+        }
       },
       async registrar(id, r) {
         await db.query("update alerts_sent set ok = $2, error = $3 where id = $1", [id, r.ok, r.error ?? null]);

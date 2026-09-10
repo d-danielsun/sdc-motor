@@ -52,13 +52,16 @@ export async function watchdog(deps: Deps): Promise<WatchdogSummary> {
     if (wh.penalizedRequestsCount !== lastPenalized) await repo.config.set("ASAAS_PENALIZED_LAST", wh.penalizedRequestsCount);
   }
 
-  if (isBusinessHoursBrt(now) && (await repo.charges.countOpen()) > 0) {
+  // Uma consulta só, e o resultado é reaproveitado pelo texto do alerta: chamar duas vezes
+  // gastava ida e volta ao banco e podia dar números diferentes no mesmo tick.
+  const abertas = isBusinessHoursBrt(now) ? await repo.charges.countOpen() : 0;
+  if (abertas > 0) {
     const last = await repo.asaasEvents.lastReceivedAt();
     if (!last || now.getTime() - last.getTime() > STALE_HEARTBEAT_HOURS * HOUR) {
       s.staleHeartbeat = true;
       const exc = await repo.exceptions.openOnce({ type: "stale_heartbeat", refTable: "webhook_events", detail: { lastReceivedAt: last?.toISOString() ?? null } });
       s.alertas.stale_heartbeat = await alertar(deps, alertaSilencio({
-        horas: STALE_HEARTBEAT_HOURS, ultimoEventoEm: last?.toISOString() ?? null, cobrancasAbertas: await repo.charges.countOpen(), excecaoId: exc.id,
+        horas: STALE_HEARTBEAT_HOURS, ultimoEventoEm: last?.toISOString() ?? null, cobrancasAbertas: abertas, excecaoId: exc.id,
       }), { consoleUrl });
     }
   }

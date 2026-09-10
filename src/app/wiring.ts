@@ -16,6 +16,9 @@ export interface Env {
   ODOO_URL: string; ODOO_DB: string; ODOO_API_KEY: string; ODOO_WEBHOOK_KEY: string;
   CONSOLE_TOKEN: string | null; PORT: number; TRUSTED_PROXIES: number;
   RESEND_API_KEY: string | null; ALERT_FROM: string | null; ALERT_EMAIL: string[]; CONSOLE_PUBLIC_URL: string | null;
+  /** Data (YYYY-MM-DD ou ISO) em que a chave do Odoo foi criada. Sem ela, o alerta de chave
+   *  vencendo NUNCA dispara — era o furo que o verificador da #14 achou. */
+  ODOO_API_KEY_CREATED_AT: string | null;
   warnings: string[];
 }
 
@@ -27,6 +30,8 @@ export function readEnv(e: NodeJS.ProcessEnv = process.env): Env {
   if (!e.RESEND_API_KEY) warnings.push("RESEND_API_KEY ausente — alertas críticos NÃO serão enviados (notifier no-op)");
   else if (!e.ALERT_FROM || parseDestinatarios(e.ALERT_EMAIL).length === 0) warnings.push("RESEND_API_KEY presente mas ALERT_FROM/ALERT_EMAIL faltando — alertas NÃO serão enviados");
   if (!e.CONSOLE_PUBLIC_URL) warnings.push("CONSOLE_PUBLIC_URL ausente — o e-mail de alerta sai sem link para o console");
+  if (!e.ODOO_API_KEY_CREATED_AT) warnings.push("ODOO_API_KEY_CREATED_AT ausente — o aviso de chave do Odoo vencendo NÃO vai disparar");
+  else if (Number.isNaN(new Date(e.ODOO_API_KEY_CREATED_AT).getTime())) warnings.push(`ODOO_API_KEY_CREATED_AT não é data válida (${e.ODOO_API_KEY_CREATED_AT}) — o aviso de chave vencendo não vai disparar`);
   if (e.CONSOLE_TOKEN && e.CONSOLE_TOKEN.length < MIN_SECRET_LENGTH) warnings.push(`CONSOLE_TOKEN tem menos de ${MIN_SECRET_LENGTH} caracteres — console DESABILITADO`);
   if (!e.ODOO_URL || !e.ODOO_API_KEY) warnings.push("ODOO_URL/ODOO_API_KEY ausentes — toda chamada ao Odoo vai falhar (ok só até o acesso chegar)");
   // DATABASE_URL ou PG* (senha com @ / # % não quebra a URL). Advisory locks exigem conexão de SESSÃO: pooler em modo transação (Supabase :6543) não serve.
@@ -42,6 +47,7 @@ export function readEnv(e: NodeJS.ProcessEnv = process.env): Env {
     PORT: Number(e.PORT ?? 8787), TRUSTED_PROXIES: Math.max(0, Math.trunc(Number(e.TRUSTED_PROXIES ?? 0)) || 0),
     RESEND_API_KEY: e.RESEND_API_KEY || null, ALERT_FROM: e.ALERT_FROM || null,
     ALERT_EMAIL: parseDestinatarios(e.ALERT_EMAIL), CONSOLE_PUBLIC_URL: (e.CONSOLE_PUBLIC_URL ?? "").replace(/\/+$/, "") || null,
+    ODOO_API_KEY_CREATED_AT: e.ODOO_API_KEY_CREATED_AT || null,
     warnings,
   };
 }

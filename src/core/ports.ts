@@ -116,9 +116,10 @@ export interface Repo {
     set(key: string, w: { writeDate: string; id: number }): Promise<void>;
   };
   alerts: {
-    /** Reserva a janela de silêncio numa statement atômica: devolve o id quando ESTE processo
-     *  ganhou o direito de avisar, e null quando alguém já avisou dentro da janela. É o dedupe
-     *  e a trava entre processos ao mesmo tempo. */
+    /** Reserva a janela de silêncio: devolve o id quando ESTE processo ganhou o direito de
+     *  avisar, e null quando alguém já avisou dentro da janela. A exclusão entre processos é
+     *  garantida por advisory lock por chave, não pelo `where not exists` — ver o comentário
+     *  em `alerts.reservar` (src/adapters/db/repo.ts), que explica por que a diferença importa. */
     reservar(a: { alertKey: string; channel: string; recipients: string; janelaMinutos: number }): Promise<number | null>;
     /** Fecha a linha reservada com o resultado do envio. */
     registrar(id: number, r: { ok: boolean; error?: string | null }): Promise<void>;
@@ -146,6 +147,8 @@ export type Logger = (msg: string, ctx?: Record<string, unknown>) => void;
 export interface Notifier {
   /** Nome do canal, gravado em `alerts_sent.channel` ("resend", "no-op", "fake"). */
   readonly canal: string;
+  /** false = canal desligado por configuração (sem chave). O núcleo nem reserva janela. */
+  readonly ativo: boolean;
   /** Para quem vai, já normalizado. Vazio = ninguém configurado. */
   readonly destinatarios: readonly string[];
   /** Entrega ou lança. Lançar não derruba job: quem chama grava ok=false e segue. */

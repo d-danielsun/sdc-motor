@@ -24,6 +24,18 @@ inventa baixa: sem confirmação do Odoo, a cobrança não é marcada como receb
 | Um host público com HTTPS para o motor | Cloud Run, ECS, VM ou servidor físico — a imagem é a mesma |
 | Postgres 16 | Supabase, Cloud SQL, RDS ou o container do compose |
 
+Na máquina de quem executa: **Node 24**, **Docker** (só se for usar o Postgres do compose) e o
+**CLI do 1Password** (`op`), que é como as chaves saem do cofre sem passar por chat. Sem `op`,
+exporte os segredos à mão — os scripts `scripts/with-op*.sh` são conveniência, não obrigação.
+
+Para rodar as consultas de conferência deste documento:
+
+```bash
+psql "$DATABASE_URL" -c "select 1"        # se tiver o psql instalado
+# ou, com o Postgres do compose:
+docker compose exec postgres psql -U motor -d motor -c "select 1"
+```
+
 Antes de tocar em produção, rode tudo localmente com o modo demo. São dois comandos, e você vê
 as quatro exceções na tela sem depender de ninguém:
 
@@ -56,6 +68,9 @@ usuário):
 3. Copie a chave. Ela aparece **uma vez**.
 4. Guarde no 1Password, sem passar por chat:
    `op item create --category password --title "Odoo API Key - SDC" password="$(pbpaste)"`
+5. **Anote a data de hoje em `ODOO_API_KEY_CREATED_AT`** (Etapa 4). Sem ela o motor não tem como
+   saber a idade da chave, e o aviso de vencimento **nunca dispara**. É uma variável de
+   ambiente; o motor grava no banco no boot.
 
 A chave vence em 90 dias. O motor avisa por e-mail a partir de 75 (ver `watchdog`), e quando ela
 vence a baixa para de acontecer: o boleto continua sendo emitido e pago, e o Odoo deixa de
@@ -66,6 +81,11 @@ receber a liquidação. Trocar a chave não precisa de janela de manutenção.
 ```bash
 ODOO_URL=https://<base>.odoo.com ODOO_DB=<base> scripts/with-op-odoo.sh npm run test:odoo
 ```
+
+O script exige `op` instalado e logado, com um item chamado exatamente `Odoo API Key - SDC` (é o
+que o passo 4 cria). Verde é: os testes passam e a saída lista as faturas lidas, com os campos que
+o motor espera. Sem chave, a suíte é **pulada** em vez de falhar — se a saída disser "skipped", a
+chave não chegou ao processo.
 
 ## Etapa 3 — as duas regras de webhook no Odoo
 
@@ -123,6 +143,7 @@ ODOO_API_KEY=...
 ODOO_WEBHOOK_KEY=...                         # ≥32 chars, o mesmo do ?k= das regras
 CONSOLE_TOKEN=...                            # ≥32 chars, só para o cron externo
 CONSOLE_PUBLIC_URL=https://<host>            # monta o link do console no e-mail de alerta
+ODOO_API_KEY_CREATED_AT=2026-09-10           # data da Etapa 2; sem ela o aviso de chave vencendo não dispara
 RESEND_API_KEY=...                           # sem ela, alerta crítico NÃO é enviado
 ALERT_FROM=motor@<dominio-verificado>
 ALERT_EMAIL=financeiro@cliente.com.br,voce@salvei.com.br
@@ -136,8 +157,54 @@ alertas ficam em no-op, e sem `CONSOLE_TOKEN` o console responde 503.
 O prefixo da chave do Asaas tem que combinar com a URL. Chave de produção com URL de sandbox, ou
 o contrário, é recusado no boot — foi o erro que mais quase aconteceu durante o desenvolvimento.
 
-**Confira:** `curl https://<host>/health` devolve `{"ok":true,"idaEnabled":false}`. O `false` está
-certo: a emissão ainda não foi ligada.
+## Etapa 4b — subir o motor e garantir que os jobs rodem
+
+Este é o passo que faz o resto existir. Escolha conforme onde o motor vai morar.
+
+**Container (Cloud Run, ECS, VM, servidor físico) — o caminho recomendado:**
+
+```bash
+docker build -t sdc-motor .
+docker run -p 8787:8787 --env-file .env sdc-motor
+```
+
+**Direto do código, para desenvolvimento ou uma VM simples:**
+
+```bash
+npm ci && npm run build && npm start      # produção
+npm run dev                                # desenvolvimento, com recarga
+```
+
+### Os jobs, que é onde mora a pegadinha
+
+O motor tem um agendador **em processo**: quando ele está no ar, `worker` roda a cada minuto,
+`sync-invoices` e `watchdog` a cada 15, e `reconcile-daily` uma vez por dia às 6h BRT. Se o seu
+host mantém **um processo sempre ligado** (VM, ECS, servidor físico, Cloud Run com instância
+mínima 1), não há mais nada a fazer.
+
+**Se o host desliga o processo quando não há requisição** — Cloud Run com escala a zero é o caso
+comum, e é o que este runbook sugere na Etapa 0 — o agendador em processo **não roda**, e sem ele:
+nenhum pagamento é processado, nenhuma fatura é varrida, nenhum alerta é disparado. O motor
+parece saudável e não faz nada.
+
+A saída é um cron externo chamando a API, que é exatamente o que o `CONSOLE_TOKEN` existe para
+abrir (é a única rota que ele ainda abre):
+
+```
+POST https://<host>/api/v1/jobs/worker            a cada 1 minuto
+POST https://<host>/api/v1/jobs/sync-invoices     a cada 15 minutos
+POST https://<host>/api/v1/jobs/watchdog          a cada 15 minutos
+POST https://<host>/api/v1/jobs/reconcile-daily   uma vez por dia, 06:00 BRT (09:00 UTC)
+```
+
+Todos com `Authorization: Bearer $CONSOLE_TOKEN`. No Cloud Scheduler, um job por linha. Um job
+nunca sobrepõe a si mesmo, então chamar mais vezes que o necessário é seguro.
+
+**Confira:** `curl -X POST -H "authorization: Bearer $CONSOLE_TOKEN" https://<host>/api/v1/jobs/watchdog`
+devolve 200 com o resumo do watchdog. Depois, a tela Saúde mostra "último watchdog" recente.
+
+**Confira também:** `curl https://<host>/health` devolve `{"ok":true,"idaEnabled":false}`. O
+`false` está certo: a emissão ainda não foi ligada.
 
 ## Etapa 5 — acesso ao console
 
@@ -161,6 +228,10 @@ WEBHOOK_PUBLIC_URL=https://<host>/webhook-asaas ALERT_EMAIL=voce@salvei.com.br \
   npm run job -- register-asaas-webhook
 ```
 
+O `ALERT_EMAIL` desta linha é do **Asaas**, não do motor: é o endereço que o Asaas usa para
+avisar quando interrompe a fila dele. Ele não substitui o `ALERT_EMAIL` do ambiente, que é quem
+recebe os alertas do motor. Pode ser o mesmo endereço, e pode ser só o seu.
+
 O job é idempotente: se já existir webhook registrado, ele diz e não cria outro.
 
 **Confira:** no painel do Asaas, o webhook aparece habilitado, com envio sequencial. Na tela
@@ -179,7 +250,10 @@ histórico de faturas do cliente.
 Na tela **Configuração** do console, defina `GO_LIVE_CUTOFF_DATE` com a data de hoje (ou a data
 combinada de início). Fatura com data anterior a essa **nunca** é cobrada pelo motor.
 
-Sem régua definida, nada é emitido — mesmo com a emissão ligada. É de propósito: falhar fechado.
+A régua vem **antes** de ligar a emissão, e não é só recomendação: o console **recusa** ligar
+`IDA_ENABLED` sem data de corte, com a mensagem "defina GO_LIVE_CUTOFF_DATE antes de ligar
+IDA_ENABLED". E mesmo que fosse ligada por outro caminho, nada seria emitido sem a régua. São
+duas defesas para o mesmo acidente, e as duas são de propósito.
 
 **Confira:** a tela Configuração mostra a data, e a tela Saúde continua com a emissão desligada.
 

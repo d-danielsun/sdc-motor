@@ -59,15 +59,34 @@ describe("alertas críticos (#14)", () => {
     expect(await linhas(w)).toHaveLength(1);
   });
 
-  it("dois processos no mesmo instante mandam UM e-mail só (AC2)", async () => {
+  it("oito processos no mesmo instante mandam UM e-mail só (AC2)", async () => {
     w = await world();
     const wh = await filaParada(w);
     const alerta = alertaFilaInterrompida({ webhookId: wh.id, penalizedRequestsCount: 15, reativado: false });
-    // A reserva é uma statement atômica: é ela que serve de trava entre processos.
+
+    // AQUECER O POOL É O QUE FAZ ESTE TESTE VALER. A versão anterior dele passava com a
+    // implementação ERRADA: com o pool frio, o `pg` abre e autentica 8 conexões TCP, e essa
+    // diferença de latência serializava as statements por acidente. O verificador da #14
+    // mostrou isso. Com as conexões já abertas, as 8 chegam juntas de verdade.
+    await Promise.all(Array.from({ length: 8 }, () => w!.pool.query("select 1")));
+
     const resultados = await Promise.all(Array.from({ length: 8 }, () => alertar(w!.deps, alerta)));
-    expect(resultados.filter((r) => r === "enviado")).toHaveLength(1);
+    expect(resultados.filter((r) => r === "enviado"), "mais de um processo ganhou a reserva").toHaveLength(1);
     expect(resultados.filter((r) => r === "silenciado")).toHaveLength(7);
     expect(w.notify.enviados).toHaveLength(1);
+    expect(await linhas(w)).toHaveLength(1);
+  });
+
+  it("a reserva trava mesmo com duas conexões separadas, não só com um pool (AC2)", async () => {
+    // O caso real do dia em que o motor rodar em duas réplicas, ou em container + cron. É o
+    // teste que a implementação anterior não sobrevivia: 2 linhas para o mesmo evento.
+    w = await world();
+    const chave = `prova-concorrencia-${Date.now()}`;
+    const reservar = () => w!.deps.repo.alerts.reservar({ alertKey: chave, channel: "fake", recipients: "a@exemplo.com.br", janelaMinutos: 360 });
+    await Promise.all(Array.from({ length: 6 }, () => w!.pool.query("select 1")));
+    const ids = await Promise.all(Array.from({ length: 6 }, reservar));
+    expect(ids.filter((id) => id !== null)).toHaveLength(1);
+    expect(Number((await w.pool.query("select count(*)::int as n from alerts_sent where alert_key=$1", [chave])).rows[0].n)).toBe(1);
   });
 
   it("passada a janela de 6h com a condição presente, avisa de novo (AC3)", async () => {
@@ -234,7 +253,34 @@ describe("alertas críticos (#14)", () => {
     } finally { await dom.close(); }
   });
 
-  it("sem canal configurado o motor funciona igual (AC1)", async () => {
+  it("canal desligado (sem chave): nada é reservado e o log diz o que teria saído (AC1)", async () => {
+    w = await world();
+    await filaParada(w);
+    w.notify.ativo = false;
+    const s = await watchdog(w.deps);
+    expect(s.ok).toBe(true);
+    expect(s.alertas.queue_interrupted).toBe("sem_canal");
+    expect(await linhas(w)).toHaveLength(0);   // nada foi tentado, nada é registrado
+    expect(w.logs.some((l) => l.msg.includes("canal desligado"))).toBe(true);
+  });
+
+  it("cada job tem a própria exceção, e o e-mail linka a certa", async () => {
+    w = await world();
+    const { createJobRunner } = await import("../../src/app/scheduler.js");
+    w.odoo.searchInvoices = async () => { throw new Error("erro do sync") };
+    w.asaas.getWebhook = async () => { throw new Error("erro do watchdog") };
+    await w.deps.repo.config.set("ASAAS_WEBHOOK_ID", "wh_x");
+    const runner = createJobRunner(w.deps);
+    await runner.run("sync-invoices");
+    await runner.run("watchdog");
+    // Antes os quatro jobs dividiam UMA exceção, e o e-mail de um levava ao erro de outro.
+    const excs = (await w.pool.query("select ref_table, detail from exceptions where type='integration_error' order by ref_table")).rows;
+    expect(excs.map((x) => x.ref_table)).toEqual(["jobs:sync-invoices", "jobs:watchdog"]);
+    expect((excs[0]?.detail as { error: string }).error).toContain("erro do sync");
+    expect((excs[1]?.detail as { error: string }).error).toContain("erro do watchdog");
+  });
+
+  it("sem canal nenhum o motor funciona igual (AC1)", async () => {
     w = await world();
     await filaParada(w);
     const semCanal = { ...w.deps, notify: undefined };

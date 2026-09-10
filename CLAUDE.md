@@ -33,6 +33,6 @@ Motor de cobrança Odoo ↔ Asaas da SDC (deal Salvei, R$ 8k/mês). Fatura posta
 - Não use o payload do webhook do Asaas como verdade: releia o pagamento (`asaas.getPayment`) antes de qualquer transição — o webhook não é assinado.
 - Não escreva `where status=...` de transição sem `WHERE status IN (…)` (`charges.transition`), nem baixa fora de `markReceived` (transação + unique).
 - Não volte a ler `x-user` para saber quem agiu: desde a #13 quem age é a sessão. E não use `innerHTML` no `public/app.js` — nome de cliente vem do Odoo.
-- Não faça alerta derrubar job, nem retry de alerta dentro do tick: a janela em `alerts_sent` é deslizante e a reserva (1 statement) é a trava entre processos.
+- Não faça alerta derrubar job, nem retry de alerta dentro do tick. A janela em `alerts_sent` é deslizante, e a exclusão entre processos vem de `pg_advisory_xact_lock` numa statement ANTES do insert — `insert ... where not exists` não trava nada no READ COMMITTED (achado do verificador da #14).
 - Não chame Odoo/Asaas segurando um lock desnecessário; os advisory locks (`withLock`) são por cobrança/fatura/parceiro e são `try` (busy → volta pra fila), nunca bloqueantes.
 - Ao sobrescrever método de um fake num teste (`w.deps.odoo.x = …`), restaure com `delete (w.odoo as any).x` — `w.deps.odoo` É o fake.

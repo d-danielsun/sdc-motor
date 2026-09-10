@@ -9,8 +9,9 @@
 // 1. Alerta é aviso, não dinheiro. Falha de envio NUNCA derruba o job que o disparou, e não
 //    há retry dentro do tick: se a condição persistir, a próxima janela avisa de novo. Retry
 //    imediato é o comportamento certo para uma baixa, e errado para um e-mail.
-// 2. O dedupe é do banco, em janela deslizante, e é também a trava entre processos. Quem
-//    inseriu a linha manda; quem não inseriu cala.
+// 2. O dedupe é do banco, em janela deslizante: quem reservou a linha manda, quem não reservou
+//    cala. A exclusão entre processos vem de advisory lock por chave dentro da reserva — o
+//    `where not exists` sozinho NÃO basta, e o comentário em `alerts.reservar` diz por quê.
 // 3. A linha registra a TENTATIVA. Se o processo morrer entre reservar e enviar, aquele aviso
 //    se perde e o próximo sai na janela seguinte. Preferimos perder um aviso a mandar dez.
 import type { Deps } from "../ports.js";
@@ -39,6 +40,12 @@ export function linkDoAlerta(baseUrl: string | null, excecaoId?: number | null):
 export async function alertar(deps: Deps, a: Alert, o: { consoleUrl?: string | null } = {}): Promise<ResultadoAlerta> {
   const { repo, notify, log } = deps;
   if (!notify) return "sem_canal";
+  if (!notify.ativo) {
+    // Canal desligado por configuração. Vale registrar POR ALERTA o que teria saído: é o que
+    // mostra, no log de um ambiente sem chave, quantas vezes alguém teria sido avisado.
+    log("alerta NÃO enviado: canal desligado", { chave: a.chave, assunto: a.assunto, canal: notify.canal });
+    return "sem_canal";
+  }
   const destinatarios = notify.destinatarios.filter(Boolean);
   if (destinatarios.length === 0) {
     log("alerta sem destinatário configurado", { chave: a.chave, assunto: a.assunto });
@@ -60,9 +67,6 @@ export async function alertar(deps: Deps, a: Alert, o: { consoleUrl?: string | n
   const link = linkDoAlerta(o.consoleUrl ?? null, a.excecaoId);
   try {
     await notify.entregar({ assunto: a.assunto, corpo: corpoComLink(a.corpo, link), link });
-    await repo.alerts.registrar(id, { ok: true });
-    log("alerta enviado", { chave: a.chave, canal: notify.canal, destinatarios: destinatarios.length });
-    return "enviado";
   } catch (e) {
     const error = (e as Error).message || String(e);
     // Registrar a falha na linha JÁ inserida: a janela continua valendo, então a condição
@@ -71,6 +75,11 @@ export async function alertar(deps: Deps, a: Alert, o: { consoleUrl?: string | n
     log("alerta falhou no envio", { chave: a.chave, error });
     return "falhou";
   }
+  // Fora do try do envio de propósito: um tropeço do banco DEPOIS da entrega não pode gravar
+  // "falhou" numa mensagem que já saiu — a trilha diria o contrário do que aconteceu.
+  await repo.alerts.registrar(id, { ok: true }).catch((e) => log("alerta enviado, mas não consegui registrar", { chave: a.chave, error: (e as Error).message }));
+  log("alerta enviado", { chave: a.chave, canal: notify.canal, destinatarios: destinatarios.length });
+  return "enviado";
 }
 
 const corpoComLink = (corpo: string, link: string | null): string =>

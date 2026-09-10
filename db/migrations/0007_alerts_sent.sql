@@ -2,9 +2,11 @@
 -- e os eventos do Asaas morrem em 14 dias: silêncio aqui vira dinheiro perdido.
 --
 -- A TABELA É O DEDUPE, e o dedupe é janela DESLIZANTE, não balde fixo. Balde de 6h manda um
--- alerta às 5h59 e outro às 6h01. Aqui a reserva é uma statement atômica só (ver
--- src/core/usecases/notify.ts), o que também serve de trava entre dois processos no mesmo
--- instante: quem inseriu manda, quem não inseriu cala.
+-- alerta às 5h59 e outro às 6h01 — e é por isso que um unique index não serve aqui.
+--
+-- A exclusão entre processos NÃO vem do `where not exists`: no READ COMMITTED ele não pega lock
+-- de predicado, e dois processos inserem os dois. Quem garante é um advisory lock por chave,
+-- tomado numa statement ANTES do insert (ver `alerts.reservar` em src/adapters/db/repo.ts).
 --
 -- A linha é registro da TENTATIVA, não do sucesso: nasce com ok=false e vira true depois do
 -- envio. Se o processo morrer entre reservar e enviar, a linha segura a janela e aquele aviso

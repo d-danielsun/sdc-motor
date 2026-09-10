@@ -22,8 +22,10 @@ Responsável pelos itens acima: **[quem tem acesso à conta Asaas da SDC]**.
 
 ## 2. Odoo
 
-- [ ] Usuário com chave de API criada, guardada no 1Password, com a data de criação registrada
-      em `ODOO_API_KEY_CREATED_AT` (é o que faz o motor avisar antes de vencer)
+- [ ] Usuário com chave de API criada e guardada no 1Password
+- [ ] **`ODOO_API_KEY_CREATED_AT` definido no ambiente** com a data de criação da chave. Sem
+      ele o aviso de vencimento nunca dispara, e a baixa para de acontecer em silêncio no dia 90.
+      O motor registra um aviso no boot quando essa variável falta
 - [ ] Regra A (fatura postada) criada, com `move_type = out_invoice` no domínio
 - [ ] Regra B (cancelada ou rascunho) criada
 - [ ] As duas regras apontam para o host **de produção**, com o token certo no `?k=`
@@ -44,6 +46,11 @@ Responsável pelos itens acima: **[quem tem acesso à conta Asaas da SDC]**.
       ficar em 0 atrás de proxy, o freio de tentativas de login conta todo mundo como a mesma
       origem; se ficar alto demais, o cliente pode escolher a própria identidade
 - [ ] Migrations aplicadas no banco de produção
+- [ ] **Os jobs estão rodando.** Se o host desliga o processo sem tráfego (Cloud Run com escala
+      a zero), o agendador em processo não roda e o motor fica de pé sem fazer nada: nenhum
+      pagamento processado, nenhum alerta disparado. Nesse caso, cron externo chamando
+      `POST /api/v1/jobs/:name` — ver Etapa 4b do runbook. Confirme na tela Saúde que "último
+      watchdog" e "última varredura" avançam sozinhos
 - [ ] Fuso do container irrelevante por desenho: datas civis são calculadas em
       America/Sao_Paulo pelo próprio código
 

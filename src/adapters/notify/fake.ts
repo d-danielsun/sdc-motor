@@ -6,6 +6,7 @@ export interface AlertaEnviado { assunto: string; corpo: string; link: string | 
 
 export class FakeNotifier implements Notifier {
   readonly canal = "fake";
+  ativo = true;
   enviados: AlertaEnviado[] = [];
   /** Quando setado, `entregar` lança com esta mensagem — simula o Resend fora do ar. */
   falharCom: string | null = null;

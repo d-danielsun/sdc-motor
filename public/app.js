@@ -492,7 +492,7 @@ function fecharPainel() {
   $("painel").hidden = true;
   // Se chegamos por link profundo (#/excecoes/42), fechar tem que limpar o id do hash, senão
   // um F5 reabre o painel e o botão voltar não faz nada.
-  const partes = location.hash.replace(/^#\//, "").split("/").filter(Boolean);
+  const partes = location.hash.replace(/^#\//, "").split("?")[0].split("/").filter(Boolean);
   if (partes.length > 1) history.replaceState(null, "", `#/${partes[0]}`);
 }
 
