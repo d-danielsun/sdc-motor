@@ -136,7 +136,7 @@ describe("console API", () => {
   });
   it("reprocessar: queue_interrupted reativa a fila no Asaas; sem ASAAS_WEBHOOK_ID → 500 config", async () => {
     const w = await fresh();
-    const wh = await w.asaas.createWebhook({ name: "Salvei", url: "https://x/webhook-asaas", email: "f@sdc.com.br", authToken: "t".repeat(32), events: ["PAYMENT_RECEIVED"] });
+    const wh = await w.asaas.createWebhook({ name: "Salvei", url: "https://x/webhook-asaas", email: "financeiro@exemplo.com.br", authToken: "t".repeat(32), events: ["PAYMENT_RECEIVED"] });
     w.asaas.interrupt(wh.id, 3);
     await w.deps.repo.exceptions.open({ type: "queue_interrupted", refTable: "asaas_webhooks", detail: { webhookId: wh.id } });
     const ex = (await w.api("/exceptions?type=queue_interrupted")).body.data[0];
@@ -176,7 +176,7 @@ describe("console API", () => {
   });
   it("x-user é sanitizado antes de virar resolved_by — nunca vai cru pro banco", async () => {
     const w = await fresh();
-    for (const [header, esperado] of [["fer<script>alert(1)</script>@sdc.com.br", "ferscriptalert1script@sdc.com.br"], ["'; drop table charges; --", "droptablecharges--"], ["«»", "console"], ["f".repeat(80), "f".repeat(64)]] as const) {
+    for (const [header, esperado] of [["fer<script>alert(1)</script>@exemplo.com.br", "ferscriptalert1script@exemplo.com.br"], ["'; drop table charges; --", "droptablecharges--"], ["«»", "console"], ["f".repeat(80), "f".repeat(64)]] as const) {
       await w.deps.repo.exceptions.open({ type: "stale_heartbeat", refTable: "webhook_events", detail: { header } });
       const ex = (await w.api("/exceptions?status=open")).body.data[0];
       await w.api(`/exceptions/${ex.id}/resolve`, { method: "POST", headers: { "x-user": header } });
