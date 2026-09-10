@@ -5,26 +5,36 @@ services:
     container_name: sdc-motor-postgres
     environment:
       POSTGRES_USER: motor
-      POSTGRES_PASSWORD: motor
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-motor}   # dev: motor; fora do laptop, defina POSTGRES_PASSWORD
       POSTGRES_DB: motor
     ports:
-      - "55432:5432"
+      - "127.0.0.1:55432:5432"                        # só loopback: o banco nunca fica exposto na rede
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U motor -d motor"]
       interval: 3s
       timeout: 3s
       retries: 20
-  motor:                       # docker compose --profile motor up  → motor + Postgres, sem Supabase
+  migrate:                     # roda antes do motor: aplica db/migrations e sai
     profiles: ["motor"]
     build: .
-    container_name: sdc-motor
+    command: ["node", "dist/cli/migrate.js"]
     depends_on:
       postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgres://motor:motor@postgres:5432/motor
+      DATABASE_URL: postgres://motor:${POSTGRES_PASSWORD:-motor}@postgres:5432/motor
+  motor:                       # docker compose --profile motor up  → migrate + motor + Postgres, sem Supabase
+    profiles: ["motor"]
+    build: .
+    container_name: sdc-motor
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: postgres://motor:${POSTGRES_PASSWORD:-motor}@postgres:5432/motor
       ASAAS_URL: ${ASAAS_URL:-https://api-sandbox.asaas.com/v3}
       ASAAS_API_KEY: ${ASAAS_API_KEY}
       ASAAS_WEBHOOK_TOKEN: ${ASAAS_WEBHOOK_TOKEN}

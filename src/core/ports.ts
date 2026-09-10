@@ -6,9 +6,14 @@ import type {
 } from "./types.js";
 
 export interface OdooClient {
-  searchInvoices(q: { writeDateAfter?: string | null; invoiceDateFrom?: string | null }): Promise<OdooInvoice[]>;
+  /** Faturas de cliente (postadas/canceladas/rascunho) ordenadas por (write_date, id), com desempate após o watermark. */
+  searchInvoices(q: { after?: { writeDate: string; id: number } | null; invoiceDateFrom?: string | null; partnerId?: number | null; limit?: number }): Promise<OdooInvoice[]>;
   getInvoice(id: number): Promise<OdooInvoice | null>;
   getOpenPaymentTermLines(moveId: number): Promise<OdooInvoiceLine[]>;
+  /** Todas as parcelas da fatura (conciliadas ou não) — numeração "k/n" e detecção de parcela sumida. */
+  getPaymentTermLines(moveId: number): Promise<OdooInvoiceLine[]>;
+  /** A linha exata, conciliada ou não; null = não existe (mais) no Odoo. */
+  getPaymentTermLine(lineId: number): Promise<OdooInvoiceLine | null>;
   getPartner(id: number): Promise<OdooPartner | null>;
   registerPayment(p: { moveLineId: number; amount: Money; paymentDate: string }): Promise<OdooPaymentResult>;
 }
@@ -24,6 +29,8 @@ export interface AsaasClient {
     customer: string; value: Money; dueDate: string; externalReference: string; description: string;
   }): Promise<AsaasPayment>;
   getPayment(id: string): Promise<AsaasPayment | null>;
+  /** Boleto vivo (não deletado) com este externalReference — idempotência da ida pela fonte de verdade. */
+  findPaymentByExternalRef(ref: string): Promise<AsaasPayment | null>;
   deletePayment(id: string): Promise<void>;
   listPayments(f: { status?: string; paymentDateFrom?: string; externalReference?: string }): AsyncIterable<AsaasPayment>;
   getWebhook(id: string): Promise<AsaasWebhook | null>;
@@ -47,23 +54,36 @@ export interface Repo {
     getByExternalRef(ref: string): Promise<Charge | null>;
     getByAsaasPayment(asaasPaymentId: string): Promise<Charge | null>;
     listByMove(moveId: number): Promise<Charge[]>;
-    insert(c: Omit<Charge, "id">): Promise<Charge>;
-    setStatus(id: number, status: ChargeStatus, patch?: Partial<Pick<Charge, "asaasPaymentId" | "bankSlipUrl" | "nossoNumero" | "asaasInvoiceNumber">>): Promise<void>;
+    /** Insere; null se outra execução já criou a cobrança desta parcela (unique em odoo_move_line_id). */
+    insert(c: Omit<Charge, "id">): Promise<Charge | null>;
+    /** Transição atômica: só grava se o status atual está em `from`. Devolve false se perdeu a corrida. */
+    transition(id: number, from: ChargeStatus[], to: ChargeStatus, patch?: Partial<Pick<Charge, "asaasPaymentId" | "bankSlipUrl" | "nossoNumero" | "asaasInvoiceNumber">>): Promise<boolean>;
+    /** Conciliação + status 'received' numa transação só. false = já existia conciliação (unique). */
+    markReceived(id: number, r: {
+      odooPaymentId: number | null; amountReceived: Money; amountExpected: Money; netValue: Money | null;
+      diffPolicy: DiffPolicy | null; paymentDate: string | null; creditDate: string | null;
+    }, patch?: Partial<Pick<Charge, "asaasPaymentId" | "nossoNumero" | "asaasInvoiceNumber">>): Promise<boolean>;
     countOpen(): Promise<number>;
   };
+  /** Exclusão mútua entre execuções (worker, varredura, reconcile, console): advisory lock do Postgres. */
+  withLock<T>(key: string, fn: () => Promise<T>): Promise<{ ok: true; value: T } | { ok: false; busy: true }>;
   asaasEvents: {
-    insert(e: { asaasEventId: string; eventType: string; asaasPaymentId: string | null; payload: unknown }): Promise<boolean>;
+    insert(e: { asaasEventId: string; eventType: string; asaasPaymentId: string | null; payload: unknown }): Promise<number | null>; // null = duplicado
     pending(limit: number, now: Date): Promise<StoredAsaasEvent[]>;
     mark(id: number, status: ProcessStatus, o?: { error?: string | null; attempts?: number; nextAttemptAt?: Date | null }): Promise<void>;
+    touch(id: number, now: Date): Promise<void>;
     lastReceivedAt(): Promise<Date | null>;
     findByPayment(asaasPaymentId: string, eventType: string): Promise<StoredAsaasEvent | null>;
     reset(id: number): Promise<void>;
+    purgeProcessedOlderThan(days: number): Promise<number>;
   };
   odooEvents: {
     insert(e: { odooModel: string; odooId: number; odooAction: string | null; payload: unknown; status?: ProcessStatus }): Promise<number>;
     pending(limit: number, now: Date): Promise<StoredOdooEvent[]>;
     mark(id: number, status: ProcessStatus, o?: { error?: string | null; attempts?: number; nextAttemptAt?: Date | null }): Promise<void>;
+    touch(id: number, now: Date): Promise<void>;
     reset(id: number): Promise<void>;
+    purgeProcessedOlderThan(days: number): Promise<number>;
   };
   reconciliations: {
     insert(r: {
@@ -74,13 +94,16 @@ export interface Repo {
   };
   exceptions: {
     open(e: { type: ExceptionType; refTable?: string; refId?: number; detail?: unknown }): Promise<void>;
+    /** Abre só se não houver outra ABERTA do mesmo tipo/ref — o padrão para quase tudo (varreduras repetem). */
+    openOnce(e: { type: ExceptionType; refTable?: string; refId?: number; detail?: unknown }): Promise<boolean>;
     hasOpen(type: ExceptionType, refTable?: string, refId?: number): Promise<boolean>;
+    countOpenByType(): Promise<Record<string, number>>;
     get(id: number): Promise<{ id: number; type: ExceptionType; status: "open" | "resolved" | "ignored"; refTable: string | null; refId: number | null; detail: unknown } | null>;
     setStatus(id: number, status: "open" | "resolved" | "ignored", by: string | null): Promise<void>;
   };
   watermarks: {
-    get(key: string): Promise<string | null>;
-    set(key: string, isoTs: string): Promise<void>;
+    get(key: string): Promise<{ writeDate: string; id: number } | null>;
+    set(key: string, w: { writeDate: string; id: number }): Promise<void>;
   };
   audit: {
     log(e: {

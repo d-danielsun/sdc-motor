@@ -1,14 +1,25 @@
 import { serve } from "@hono/node-server";
-import { startScheduler } from "./scheduler.js";
+import { assertMigrated } from "../adapters/db/migrations.js";
 import { createConsoleApi } from "./console.js";
+import { startScheduler } from "./scheduler.js";
 import { createServer } from "./server.js";
 import { buildDeps, jsonLog, readEnv } from "./wiring.js";
 
 const env = readEnv();
-const { deps, queries, close } = buildDeps(env);
+for (const w of env.warnings) jsonLog("aviso de configuração", { warning: w });
+const { deps, queries, pool, close } = buildDeps(env);
+await assertMigrated(pool).catch((e) => { console.error(String((e as Error).message)); process.exit(1); });
 const app = createServer({ repo: deps.repo, asaasWebhookToken: env.ASAAS_WEBHOOK_TOKEN, odooWebhookKey: env.ODOO_WEBHOOK_KEY, log: jsonLog, console: createConsoleApi({ deps, queries, token: env.CONSOLE_TOKEN }) });
-const stop = startScheduler(deps);
-const server = serve({ fetch: app.fetch, port: env.PORT }, (info) => jsonLog("motor no ar", { port: info.port }));
+const scheduler = startScheduler(deps);
+const server = serve({ fetch: app.fetch, port: env.PORT }, (info) => jsonLog("motor no ar", { port: info.port, console: env.CONSOLE_TOKEN !== null }));
+let stopping = false;
 for (const sig of ["SIGINT", "SIGTERM"] as const) {
-  process.on(sig, () => { stop(); server.close(); void close().then(() => process.exit(0)); });
+  process.on(sig, () => {
+    if (stopping) return;
+    stopping = true;
+    jsonLog("parando", { signal: sig, inFlight: scheduler.inFlight() });
+    server.close();
+    void scheduler.stop().then(close).then(() => process.exit(0));   // espera jobs no meio de uma escrita financeira
+    setTimeout(() => process.exit(1), 60_000).unref();
+  });
 }

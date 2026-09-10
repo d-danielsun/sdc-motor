@@ -1,122 +1,134 @@
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { createConsoleQueries } from "../../src/adapters/db/console.js";
-import { createPool } from "../../src/adapters/db/pool.js";
-import { createConsoleApi } from "../../src/app/console.js";
-import { createServer } from "../../src/app/server.js";
 import { processAsaasEvents, syncInvoices } from "../../src/core/index.js";
-import { CNPJ_OK, DB_URL, dbReachable, world, type World } from "../helpers.js";
+import { CNPJ_OK, dbReachable, world, type World } from "../helpers.js";
+import { createConsoleApi } from "../../src/app/console.js";
+import { createConsoleQueries } from "../../src/adapters/db/console.js";
+import { createServer } from "../../src/app/server.js";
 
-let w: World; let pool: ReturnType<typeof createPool>;
-const TOKEN = "c".repeat(40);
-beforeAll(async () => { if (!(await dbReachable())) throw new Error("Postgres local fora do ar"); });
-afterEach(async () => { await pool?.end(); await w?.close(); });
+const opened: World[] = [];
+async function fresh(): Promise<World> { const w = await world(); opened.push(w); return w; }
+beforeAll(async () => { if (!(await dbReachable())) throw new Error("banco de teste fora do ar"); });
+afterEach(async () => { for (const w of opened.splice(0)) await w.close(); });
 
 async function setup() {
-  w = await world(); pool = createPool(DB_URL);
+  const w = await fresh();
   w.odoo.addPartner({ id: 10, name: "Cliente Um Ltda", vat: CNPJ_OK });
   w.odoo.addInvoice({ id: 100, name: "INV/2026/0001", partnerId: 10, lines: [{ id: 1001, dateMaturity: "2026-09-01", amount: "100.00" }, { id: 1002, dateMaturity: "2026-09-25", amount: "100.00" }] });
   await syncInvoices(w.deps);
-  const api = createConsoleApi({ deps: w.deps, queries: createConsoleQueries(pool), token: TOKEN });
-  const app = createServer({ repo: w.deps.repo, asaasWebhookToken: "t".repeat(32), odooWebhookKey: "k".repeat(32), log: () => {}, console: api });
-  const call = async (path: string, init: RequestInit = {}, token = TOKEN) => {
-    const res = await app.request(`/api/v1${path}`, { ...init, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-user": "dan", ...(init.headers ?? {}) } });
-    return { status: res.status, body: await res.json() as any };
-  };
-  return { app, call };
+  return w;
 }
 
 describe("console API", () => {
-  it("auth: 401 com token errado, 503 sem CONSOLE_TOKEN", async () => {
-    const { call } = await setup();
-    expect((await call("/charges", {}, "errado")).status).toBe(401);
-    const off = createServer({ repo: w.deps.repo, asaasWebhookToken: "t".repeat(32), odooWebhookKey: "k".repeat(32), log: () => {}, console: createConsoleApi({ deps: w.deps, queries: createConsoleQueries(pool), token: null }) });
-    expect((await off.request("/api/v1/charges", { headers: { authorization: `Bearer ${TOKEN}` } })).status).toBe(503);
+  it("auth: 401 com token errado; 503 sem CONSOLE_TOKEN; 404 JSON em rota inexistente", async () => {
+    const w = await setup();
+    expect((await w.api("/charges", {}, "errado")).status).toBe(401);
+    const off = createServer({ repo: w.deps.repo, asaasWebhookToken: "t".repeat(32), odooWebhookKey: "k".repeat(32), log: () => {}, console: createConsoleApi({ deps: w.deps, queries: createConsoleQueries(w.pool), token: null }) });
+    expect((await off.request("/api/v1/charges", { headers: { authorization: "Bearer x" } })).status).toBe(503);
+    const nf = await w.api("/nada");
+    expect(nf.status).toBe(404); expect(nf.body).toMatchObject({ ok: false, code: "not_found" });
   });
-  it("cobranças: lista com cliente, filtros e busca; detalhe com eventos e conciliação; aging", async () => {
-    const { call } = await setup();
-    const all = await call("/charges");
-    expect(all.body.total).toBe(2);
+  it("entrada inválida → 400 JSON, nunca 500: limit/offset/id/partner/due_from/status/q/body", async () => {
+    const w = await setup();
+    for (const p of ["/charges?limit=abc", "/charges?limit=0", "/charges?limit=1000", "/charges?offset=-1", "/charges?offset=1e300", "/charges?partner=abc", "/charges?due_from=garbage", "/charges?due_to=2026-99-99", "/charges?status=opened", "/exceptions?status=bogus", "/exceptions?type=x", "/exceptions/abc", "/exceptions/1.5", "/charges/abc", `/charges?q=${"x".repeat(101)}`]) {
+      const r = await w.api(p);
+      expect(r.status, p).toBe(400); expect(r.body, p).toMatchObject({ ok: false, code: "invalid_input" });
+    }
+    expect((await w.api("/exceptions/abc/resolve", { method: "POST" })).status).toBe(400);
+    for (const body of ["null", "[1]", '"x"', "{{{"]) expect((await w.api("/config/IDA_ENABLED", { method: "PUT", body })).status, body).toBe(400);
+  });
+  it("cobranças: lista com cliente, filtros e busca (% e _ são literais); detalhe com eventos e conciliação; aging", async () => {
+    const w = await setup();
+    const all = await w.api("/charges");
+    expect(all.body).toMatchObject({ total: 2, limit: 50, offset: 0 });
     expect(all.body.data[0]).toMatchObject({ invoiceName: "INV/2026/0001", status: "created", customer: { name: "Cliente Um Ltda", cpfCnpj: CNPJ_OK }, received: null, openExceptions: 0 });
     expect(all.body.data[0].bankSlipUrl).toMatch(/^https:/);
-    expect((await call("/charges?due_to=2026-09-10")).body.total).toBe(1);
-    expect((await call("/charges?q=INV/2026")).body.total).toBe(2);
-    expect((await call("/charges?status=received")).body.total).toBe(0);
+    expect((await w.api("/charges?due_to=2026-09-10")).body.total).toBe(1);
+    expect((await w.api("/charges?q=INV/2026")).body.total).toBe(2);
+    expect((await w.api("/charges?q=%")).body.total).toBe(0);
+    expect((await w.api("/charges?status=received")).body.total).toBe(0);
+    expect((await w.api("/charges?status=created,confirmed&limit=1&offset=1")).body).toMatchObject({ total: 2, limit: 1, offset: 1 });
     const [p1] = [...w.asaas.payments.values()];
     await w.deps.repo.asaasEvents.insert({ asaasEventId: "e1", eventType: "PAYMENT_RECEIVED", asaasPaymentId: p1!.id, payload: w.asaas.confirm(p1!.id) });
     await processAsaasEvents(w.deps);
-    const det = await call(`/charges/${all.body.data[0].id}`);
+    const det = await w.api(`/charges/${all.body.data[0].id}`);
     expect(det.body).toMatchObject({ status: "received", received: { amountReceived: "100.00", diffPolicy: null } });
-    expect(det.body.events).toHaveLength(1);
-    expect(det.body.reconciliations).toHaveLength(1);
-    const dash = await call("/dashboard");                                     // hoje = 2026-09-10: parcela 2 (25/09) a vencer
-    expect(dash.body.aging.find((b: any) => b.bucket === "a_vencer")).toMatchObject({ count: 1, amount: "100.00" });
+    expect(det.body.events[0]).toMatchObject({ asaasEventId: "e1", processStatus: "done" });
+    expect(det.body.reconciliations[0]).toMatchObject({ amountReceived: "100.00", diff: "0.00" });
+    expect((await w.api("/dashboard")).body.aging.find((b: any) => b.bucket === "a_vencer")).toMatchObject({ count: 1, amount: "100.00" });
   });
-  it("exceções: lista com cobrança junta; resolver/ignorar; reprocessar reenfileira o evento e a baixa acontece", async () => {
-    const { call } = await setup();
-    // pagamento de uma parcela que ainda não existia → unmatched
-    const orphan = { id: "evt_o", event: "PAYMENT_RECEIVED", dateCreated: "", payment: { id: "pay_o", value: 100, status: "RECEIVED", externalReference: "odoo:move_line:1002", paymentDate: "2026-09-09" } };
-    // apaga a charge 1002 pra simular: o boleto foi criado fora do motor e a cobrança do motor "não existe"
-    await pool.query("delete from charges where odoo_move_line_id=1002");
-    await w.deps.repo.asaasEvents.insert({ asaasEventId: "evt_o", eventType: "PAYMENT_RECEIVED", asaasPaymentId: "pay_o", payload: orphan });
+  it("exceções: lista com cobrança junta; resolver/ignorar (409 se já fechada, 404 se não existe); reprocessar reenfileira e a baixa acontece", async () => {
+    const w = await setup();
+    await w.pool.query("delete from charges where odoo_move_line_id=1002");   // simula: o boleto foi criado fora do motor
+    const orphan = [...w.asaas.payments.values()].find((p) => p.externalReference === "odoo:move_line:1002")!;
+    await w.deps.repo.asaasEvents.insert({ asaasEventId: "evt_o", eventType: "PAYMENT_RECEIVED", asaasPaymentId: orphan.id, payload: w.asaas.confirm(orphan.id) });
     await processAsaasEvents(w.deps);
-    const list = await call("/exceptions?status=open");
+    const list = await w.api("/exceptions?status=open");
     expect(list.body.total).toBe(1);
     expect(list.body.data[0]).toMatchObject({ type: "payment_unmatched", status: "open", charge: null });
     const exId = list.body.data[0].id;
-    // financeiro cria a cobrança faltante (aqui: a varredura recria a parcela 1002) e reprocessa
-    await pool.query("update sync_watermarks set last_write_date='2020-01-01'");
+    await w.pool.query("update sync_watermarks set last_write_date='2020-01-01', last_id=0");   // a varredura recria a parcela 1002 (adotando o boleto)
     await syncInvoices(w.deps);
-    const re = await call(`/exceptions/${exId}/reprocess`, { method: "POST" });
-    expect(re.body).toMatchObject({ ok: true, action: "asaas_event_requeued" });
+    expect((await w.api(`/exceptions/${exId}/reprocess`, { method: "POST" })).body).toMatchObject({ ok: true, action: "asaas_event_requeued" });
     await processAsaasEvents(w.deps);
-    expect((await call(`/exceptions/${exId}`)).body.status).toBe("resolved");
-    expect((await call("/charges?status=received")).body.total).toBe(1);
-    // ignorar/resolver manual
+    expect((await w.api(`/exceptions/${exId}`)).body.status).toBe("resolved");
+    expect((await w.api("/charges?status=received")).body.total).toBe(1);
+    const again = await w.api(`/exceptions/${exId}/reprocess`, { method: "POST" });
+    expect(again.status).toBe(409); expect(again.body.code).toBe("invalid_state");
     await w.deps.repo.exceptions.open({ type: "stale_heartbeat", refTable: "webhook_events" });
-    const ex2 = (await call("/exceptions?status=open")).body.data[0].id;
-    expect((await call(`/exceptions/${ex2}/ignore`, { method: "POST" })).body).toMatchObject({ ok: true, action: "ignored" });
-    expect((await call(`/exceptions/${ex2}`)).body).toMatchObject({ status: "ignored", resolvedBy: "dan" });
-    expect((await call(`/exceptions/999/resolve`, { method: "POST" })).status).toBe(400);
+    const ex2 = (await w.api("/exceptions?status=open")).body.data[0].id;
+    expect((await w.api(`/exceptions/${ex2}/ignore`, { method: "POST" })).body).toMatchObject({ ok: true, action: "ignored" });
+    expect((await w.api(`/exceptions/${ex2}`)).body).toMatchObject({ status: "ignored", resolvedBy: "dan" });
+    expect((await w.api(`/exceptions/999999/resolve`, { method: "POST" })).status).toBe(404);
   });
-  it("write-off: juros do Asaas → writeoff_needed → financeiro aceita → baixa com diff_policy juros_multa", async () => {
-    const { call } = await setup();
-    const [p1] = [...w.asaas.payments.values()];
+  it("write-off: juros do Asaas → writeoff_needed → financeiro aceita → baixa com diff_policy juros_multa; pagamento estornado → 409", async () => {
+    const w = await setup();
+    const [p1, p2] = [...w.asaas.payments.values()];
     await w.deps.repo.asaasEvents.insert({ asaasEventId: "j1", eventType: "PAYMENT_RECEIVED", asaasPaymentId: p1!.id, payload: w.asaas.confirm(p1!.id, { interest: "3.10" }) });
+    await w.deps.repo.asaasEvents.insert({ asaasEventId: "j2", eventType: "PAYMENT_RECEIVED", asaasPaymentId: p2!.id, payload: w.asaas.confirm(p2!.id, { interest: "1.00" }) });
     await processAsaasEvents(w.deps);
-    const ex = (await call("/exceptions?type=writeoff_needed")).body.data[0];
-    expect(ex.charge).toMatchObject({ invoiceName: "INV/2026/0001", customerName: "Cliente Um Ltda" });
-    const r = await call(`/exceptions/${ex.id}/accept-writeoff`, { method: "POST" });
-    expect(r.body).toMatchObject({ ok: true, action: "writeoff_accepted" });
-    const det = await call(`/charges/${ex.charge.id}`);
-    expect(det.body.received).toMatchObject({ amountReceived: "103.10", diffPolicy: "juros_multa" });
+    const exs = (await w.api("/exceptions?type=writeoff_needed")).body.data;
+    expect(exs).toHaveLength(2);
+    const ex1 = exs.find((e: any) => e.charge.id === 1), ex2 = exs.find((e: any) => e.charge.id === 2);
+    expect(ex1.charge).toMatchObject({ invoiceName: "INV/2026/0001", customerName: "Cliente Um Ltda" });
+    expect((await w.api(`/exceptions/${ex1.id}/accept-writeoff`, { method: "POST" })).body).toMatchObject({ ok: true, action: "writeoff_accepted" });
+    expect((await w.api(`/charges/1`)).body.received).toMatchObject({ amountReceived: "103.10", diffPolicy: "juros_multa" });
     expect(w.odoo.payments[0]).toMatchObject({ amount: "103.10" });
+    w.asaas.setStatus(p2!.id, "REFUNDED");
+    const r = await w.api(`/exceptions/${ex2.id}/accept-writeoff`, { method: "POST" });
+    expect(r.status).toBe(409); expect(w.odoo.payments).toHaveLength(1);
+    expect((await w.api(`/exceptions/${(await w.api("/exceptions?type=amount_divergent")).body.data[0]?.id ?? 999999}/accept-writeoff`, { method: "POST" })).status).toBe(404);
   });
-  it("cliente sem documento: corrigido no Odoo → reprocessar sincroniza e cria as cobranças", async () => {
-    w = await world(); pool = createPool(DB_URL);
+  it("cliente sem documento: corrigido no Odoo → reprocessar sincroniza só as faturas dele e cria as cobranças", async () => {
+    const w = await fresh();
     w.odoo.addPartner({ id: 20, name: "Sem Doc", vat: null });
+    w.odoo.addPartner({ id: 30, name: "Outro", vat: CNPJ_OK });
     w.odoo.addInvoice({ id: 200, name: "INV/2026/0002", partnerId: 20, lines: [{ id: 2001, dateMaturity: "2026-09-30", amount: "50.00" }] });
+    w.odoo.addInvoice({ id: 300, name: "INV/2026/0003", partnerId: 30, lines: [{ id: 3001, dateMaturity: "2026-09-30", amount: "70.00" }] });
     await syncInvoices(w.deps);
-    const api = createConsoleApi({ deps: w.deps, queries: createConsoleQueries(pool), token: TOKEN });
-    const ex = (await api.request("/exceptions?status=open", { headers: { authorization: `Bearer ${TOKEN}` } }).then((r) => r.json()) as any).data[0];
+    const ex = (await w.api("/exceptions?status=open")).body.data[0];
     expect(ex.type).toBe("customer_missing_document");
     w.odoo.partners.get(20)!.vat = "529.982.247-25";
-    const r = await api.request(`/exceptions/${ex.id}/reprocess`, { method: "POST", headers: { authorization: `Bearer ${TOKEN}` } }).then((x) => x.json()) as any;
-    expect(r).toMatchObject({ ok: true, action: "customer_synced", detail: { chargesCreated: 1 } });
-    expect(w.asaas.payments.size).toBe(1);
+    const r = await w.api(`/exceptions/${ex.id}/reprocess`, { method: "POST" });
+    expect(r.body).toMatchObject({ ok: true, action: "customer_synced", detail: { invoicesProcessed: 1, chargesCreated: 1 } });
+    expect([...w.asaas.payments.values()].map((p) => p.externalReference).sort()).toEqual(["odoo:move_line:2001", "odoo:move_line:3001"]);
   });
-  it("config: gates R1 (IDA_ENABLED) e R3 (notificações) pelo console; chave desconhecida é recusada", async () => {
-    const { call } = await setup();
-    expect((await call("/config")).body).toMatchObject({ IDA_ENABLED: true, TOLERANCE_BRL: "0.01" });
-    expect((await call("/config/IDA_ENABLED", { method: "PUT", body: JSON.stringify({ value: false }) })).body.ok).toBe(true);
-    expect((await call("/config")).body.IDA_ENABLED).toBe(false);
-    expect((await call("/config/IDA_ENABLED", { method: "PUT", body: JSON.stringify({ value: "sim" }) })).status).toBe(400);
-    expect((await call("/config/ASAAS_API_KEY", { method: "PUT", body: JSON.stringify({ value: "x" }) })).status).toBe(400);
-    expect((await call("/config/GO_LIVE_CUTOFF_DATE", { method: "PUT", body: JSON.stringify({ value: "2026-10-01" }) })).body.ok).toBe(true);
+  it("config: gates R1 (IDA_ENABLED) e R3 (notificações como política); validação por chave; health-report", async () => {
+    const w = await setup();
+    expect((await w.api("/config")).body).toMatchObject({ IDA_ENABLED: true, TOLERANCE_BRL: "0.01", RECONCILE_LOOKBACK_DAYS: 3 });
+    for (const [k, v, st] of [["IDA_ENABLED", false, 200], ["IDA_ENABLED", "sim", 400], ["TOLERANCE_BRL", "0.50", 200], ["TOLERANCE_BRL", "0,50", 400], ["TOLERANCE_BRL", "999.00", 400], ["JUROS_MULTA_AUTO", true, 200], ["GO_LIVE_CUTOFF_DATE", null, 200], ["GO_LIVE_CUTOFF_DATE", "2026-99-99", 400], ["RECONCILE_LOOKBACK_DAYS", 7, 200], ["RECONCILE_LOOKBACK_DAYS", 0, 400], ["ASAAS_API_KEY", "x", 400]] as const) {
+      expect((await w.api(`/config/${k}`, { method: "PUT", body: JSON.stringify({ value: v }) })).status, `${k}=${JSON.stringify(v)}`).toBe(st);
+    }
+    expect((await w.api("/config")).body).toMatchObject({ IDA_ENABLED: false, TOLERANCE_BRL: "0.50", RECONCILE_LOOKBACK_DAYS: 7 });
     expect([...w.asaas.customers.values()][0]!.notificationDisabled).toBe(true);
-    expect((await call("/customers/enable-notifications", { method: "POST" })).body).toEqual({ updated: 1, failed: 0 });
+    expect((await w.api("/customers/enable-notifications", { method: "POST" })).body).toMatchObject({ ok: true, action: "notifications_enabled", detail: { updated: 1, failed: 0 } });
     expect([...w.asaas.customers.values()][0]!.notificationDisabled).toBe(false);
-    const h = await call("/health-report");
-    expect(h.body).toMatchObject({ idaEnabled: false, openCharges: 2, webhook: { id: null } });
-    expect(h.body.lastSync).toMatchObject({ created: 2 });
+    // política: cliente novo depois do gate já nasce com notificações ligadas
+    await w.deps.repo.config.set("IDA_ENABLED", true);
+    w.odoo.addPartner({ id: 11, name: "Novo", vat: CNPJ_OK }); w.odoo.addInvoice({ id: 101, name: "INV/2", partnerId: 11, lines: [{ id: 1101, dateMaturity: "2026-10-01", amount: "5.00" }] });
+    await syncInvoices(w.deps);
+    expect([...w.asaas.customers.values()].find((c) => c.externalReference === "odoo:partner:11")!.notificationDisabled).toBe(false);
+    const h = await w.api("/health-report");
+    expect(h.body).toMatchObject({ idaEnabled: true, notificationsEnabled: true, openCharges: 3, webhook: { id: null } });
+    expect(h.body.lastSync).toMatchObject({ ok: true, created: 1 });
   });
 });

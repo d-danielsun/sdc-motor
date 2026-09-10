@@ -2,20 +2,25 @@
   "name": "sdc-motor",
   "version": "0.1.0",
   "private": true,
-  "description": "Motor de cobrança Odoo ↔ Asaas da SDC (Salvei) — núcleo portátil, roda em Supabase hoje e em container amanhã",
+  "description": "Motor de cobran\u00e7a Odoo \u2194 Asaas da SDC (Salvei) \u2014 n\u00facleo port\u00e1til, roda em Supabase hoje e em container amanh\u00e3",
   "type": "module",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run test/unit",
+    "test": "vitest run test/unit test/db",
     "test:sandbox": "vitest run test/sandbox",
+    "test:odoo": "vitest run test/sandbox/odoo.live.test.ts",
     "db:up": "docker compose up -d postgres",
     "db:migrate": "tsx src/cli/migrate.ts",
-    "db:reset": "docker compose down -v && docker compose up -d postgres && sleep 3 && tsx src/cli/migrate.ts",
+    "db:reset": "docker compose down -v && docker compose up -d postgres && sleep 4 && npm run db:migrate && npm run db:migrate:test",
     "dev": "tsx watch src/app/main.ts",
     "start": "node dist/app/main.js",
-    "job": "tsx src/cli/job.ts"
+    "job": "tsx src/cli/job.ts",
+    "db:migrate:test": "DATABASE_URL=postgres://motor:motor@localhost:55432/motor_test tsx src/cli/migrate.ts",
+    "test:unit": "vitest run test/unit"
   },
   "dependencies": {
     "@hono/node-server": "^1.14.0",

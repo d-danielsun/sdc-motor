@@ -1,25 +1,19 @@
-// Aplica db/migrations/*.sql em ordem, uma transação por arquivo, registrando em schema_migrations.
-import { readdir, readFile } from "node:fs/promises";
+// Aplica db/migrations/*.sql em ordem, uma transação por arquivo, com lock entre processos (dois containers subindo).
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import pg from "pg";
-
-const url = process.env.DATABASE_URL ?? "postgres://motor:motor@localhost:55432/motor";
-const dir = path.resolve(process.cwd(), "db/migrations");
+import { MIGRATIONS_DIR, pendingMigrations } from "../adapters/db/migrations.js";
+import { DEFAULT_DATABASE_URL } from "../adapters/db/pool.js";
 
 async function main() {
-  const client = new pg.Client({ connectionString: url });
+  const client = new pg.Client({ connectionString: process.env.DATABASE_URL ?? DEFAULT_DATABASE_URL });
   await client.connect();
   try {
-    await client.query(
-      "create table if not exists schema_migrations (name text primary key, applied_at timestamptz not null default now())",
-    );
-    const applied = new Set(
-      (await client.query<{ name: string }>("select name from schema_migrations")).rows.map((r) => r.name),
-    );
-    const files = (await readdir(dir)).filter((f) => f.endsWith(".sql")).sort();
-    for (const f of files) {
-      if (applied.has(f)) continue;
-      const sql = await readFile(path.join(dir, f), "utf8");
+    await client.query("select pg_advisory_lock(hashtext('sdc-motor:migrate'))");
+    await client.query("create table if not exists schema_migrations (name text primary key, applied_at timestamptz not null default now())");
+    const pending = await pendingMigrations(client);
+    for (const f of pending) {
+      const sql = await readFile(path.join(MIGRATIONS_DIR, f), "utf8");
       await client.query("begin");
       try {
         await client.query(sql);
@@ -31,13 +25,11 @@ async function main() {
         throw new Error(`migration ${f} failed: ${(e as Error).message}`);
       }
     }
-    console.log(`ok — ${files.length} migrations, ${files.length - applied.size} applied now`);
+    console.log(`ok — ${pending.length} applied now`);
   } finally {
+    await client.query("select pg_advisory_unlock(hashtext('sdc-motor:migrate'))").catch(() => undefined);
     await client.end();
   }
 }
 
-main().catch((e) => {
-  console.error(e.message);
-  process.exit(1);
-});
+main().catch((e) => { console.error(e.message); process.exit(1); });

@@ -1,17 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { canTransition } from "../../src/core/charges.js";
+import { canTransition, fromStatesFor } from "../../src/core/charges.js";
 import { backoff } from "../../src/core/usecases/retry.js";
 import { daysAgo } from "../../src/core/usecases/reconcileDaily.js";
 import { isBusinessHoursBrt } from "../../src/core/usecases/watchdog.js";
 import { normalizeDocument } from "../../src/core/customers.js";
+import { fixedClock, systemClock } from "../../src/adapters/clock.js";
+import { fromOdooDatetime, toOdooDatetime } from "../../src/adapters/odoo/client.js";
+import { isIsoDate } from "../../src/core/usecases/console.js";
 
 describe("máquina de estados", () => {
   it("caminho feliz e proibições", () => {
     expect(canTransition("created", "confirmed")).toBe(true);
     expect(canTransition("confirmed", "received")).toBe(true);
     expect(canTransition("received", "cancelled")).toBe(false);
-    expect(canTransition("cancelled", "created")).toBe(true); // PAYMENT_RESTORED
+    expect(canTransition("cancelled", "created")).toBe(true); // PAYMENT_RESTORED / fatura re-postada
     expect(canTransition("refunded", "received")).toBe(false);
+    expect(fromStatesFor("cancelled").sort()).toEqual(["confirmed", "created"]);
   });
 });
 describe("utilitários", () => {
@@ -34,4 +38,16 @@ describe("utilitários", () => {
     expect(normalizeDocument("123")).toBeNull();
     expect(normalizeDocument(null)).toBeNull();
   });
+  it("today() respeita America/Sao_Paulo nos dois relógios", () => {
+    expect(fixedClock("2026-09-10T01:00:00.000Z").today()).toBe("2026-09-09");
+    expect(fixedClock("2026-09-10T13:00:00.000Z").today()).toBe("2026-09-10");
+    expect(systemClock.today()).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+  it("datas do Odoo vão e voltam", () => {
+    expect(fromOdooDatetime("2026-09-09 13:00:00")).toBe("2026-09-09T13:00:00.000Z");
+    expect(fromOdooDatetime("2026-09-09T13:00:00.000Z")).toBe("2026-09-09T13:00:00.000Z");
+    expect(toOdooDatetime("2026-09-09T13:00:00.000Z")).toBe("2026-09-09 13:00:00");
+    expect(fromOdooDatetime("2026-09-09 13:00:05") > fromOdooDatetime("2026-09-09 12:59:59")).toBe(true);
+  });
+  it("isIsoDate rejeita 2026-99-99", () => { expect(isIsoDate("2026-10-01")).toBe(true); expect(isIsoDate("2026-99-99")).toBe(false); expect(isIsoDate("garbage")).toBe(false); });
 });
