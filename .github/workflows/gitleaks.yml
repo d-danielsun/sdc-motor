@@ -12,6 +12,10 @@ on:
   push:
     branches: [main]
 
+concurrency:
+  group: gitleaks-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -23,12 +27,33 @@ jobs:
       GITLEAKS_VERSION: "8.30.1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          # Histórico completo: o segundo passo varre os commits do PR, não só o resultado.
+          fetch-depth: 0
 
       - name: instalar o gitleaks
         run: |
-          curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -o /tmp/gitleaks.tgz
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          asset="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSL "$base/$asset" -o /tmp/gitleaks.tgz
+          curl -fsSL "$base/gitleaks_${GITLEAKS_VERSION}_checksums.txt" -o /tmp/gitleaks.sums
+          # Asset de release do GitHub é mutável. Sem conferir o hash, este passo executa
+          # o que estiver publicado hoje, seja lá o que for.
+          esperado=$(grep " $asset$" /tmp/gitleaks.sums | cut -d' ' -f1)
+          obtido=$(sha256sum /tmp/gitleaks.tgz | cut -d' ' -f1)
+          if [ -z "$esperado" ] || [ "$esperado" != "$obtido" ]; then
+            echo "checksum do gitleaks não confere (esperado=${esperado:-vazio} obtido=$obtido)" >&2
+            exit 1
+          fi
           tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
           /tmp/gitleaks version
 
       - name: varrer a árvore de trabalho
-        run: /tmp/gitleaks detect --no-git --source . --config .gitleaks.toml --redact --verbose
+        run: /tmp/gitleaks dir . --config .gitleaks.toml --redact --verbose
+
+      # A varredura acima só vê o resultado final. Um segredo adicionado num commit e
+      # removido no seguinte passaria verde e ficaria no histórico da main para sempre —
+      # verificado num repo de prova. Este passo varre os commits do próprio PR.
+      - name: varrer os commits do PR
+        if: github.event_name == 'pull_request'
+        run: /tmp/gitleaks git . --log-opts "origin/${GITHUB_BASE_REF}..HEAD" --config .gitleaks.toml --redact --verbose

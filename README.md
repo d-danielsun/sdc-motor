@@ -65,16 +65,25 @@ propósito: filtro de path é como uma suíte morre calada.
   da imagem, que executa `npm run build` no estágio de build. Job **`sandbox`**: só em
   `workflow_dispatch`, toca o sandbox real do Asaas e é pulado com aviso se o segredo
   `ASAAS_SANDBOX_KEY` não estiver cadastrado.
-- **`gitleaks`** (`.github/workflows/gitleaks.yml`) — varre a árvore com o binário oficial
-  pinado. A allowlist em `.gitleaks.toml` cobre só o `.env.example`. Fixtures de teste ficam
-  de fora de propósito, para que uma chave real colada num teste seja pega.
+- **`gitleaks`** (`.github/workflows/gitleaks.yml`) — varre duas coisas com o binário
+  oficial pinado, cujo checksum é conferido antes de rodar: a árvore de trabalho e, em PR,
+  os commits do próprio PR. A segunda varredura existe porque um segredo adicionado num
+  commit e removido no seguinte passa verde na primeira e fica no histórico para sempre.
+  A allowlist em `.gitleaks.toml` cobre só o `.env.example`, e há uma regra própria para a
+  chave do Asaas, que as regras padrão não pegam porque o valor começa com `$`. Fixtures de
+  teste ficam de fora de propósito, para que uma chave real colada num teste seja pega.
 
 O CI que roda mas não bloqueia é decoração. Quem transforma os workflows em gate é
 `./scripts/branch-protection.sh`, idempotente, que exige `test`, `build` e `gitleaks` verdes,
 com a branch atualizada em relação à base e a regra valendo também para admin. Rode uma vez
 por repositório (`--dry-run` mostra o payload sem alterar nada). Em repositório privado, a
-proteção de branch depende de plano pago do GitHub; sem ele o CI sinaliza mas não bloqueia,
-e o script diz isso na falha.
+proteção de branch depende de plano pago do GitHub. Rulesets não são saída: estão atrás do
+mesmo paywall e devolvem o mesmo 403. Sem plano pago ou sem tornar o repositório público, o
+CI sinaliza mas não bloqueia o merge, e o script diz isso na falha.
+
+O `npm run typecheck` checa `src/` e também `test/`, via `tsconfig.test.json`. O
+`tsconfig.json` sozinho não olha os testes, e o vitest apaga os tipos sem checar: dava para
+escrever `const n: number = "texto"` num teste e o gate passar verde.
 
 Para rodar a mesma coisa na máquina: `npm run db:up && npm run db:migrate && npm run
 db:migrate:test && npm run typecheck && npm test`. O `DATABASE_URL_TEST` sobrescreve o banco

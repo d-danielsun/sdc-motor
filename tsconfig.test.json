@@ -1,0 +1,9 @@
+{
+  // O tsconfig.json só inclui src/, e o vitest apaga os tipos sem checar: dava para
+  // escrever `const n: number = "texto"` num teste e o gate passava verde. Os testes são
+  // a prova de que o dinheiro volta certo — eles precisam ser checados também.
+  "extends": "./tsconfig.json",
+  // rootDir volta pra raiz porque test/ fica fora de src/; com noEmit isso não gera nada.
+  "compilerOptions": { "noEmit": true, "rootDir": ".", "types": ["node"] },
+  "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts"]
+}

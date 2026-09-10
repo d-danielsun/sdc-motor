@@ -24,7 +24,7 @@ d("Odoo real (vivo, somente leitura) — spike S0.1", () => {
   const anota = (s: string) => { achados.push(s); console.log(`   · ${s}`); };
 
   it("a trava de escrita funciona (se este teste falhar, NÃO rode o resto contra produção)", async () => {
-    await expect(odoo.registerPayment({ moveLineId: 1, amount: "1.00", paymentDate: "2026-01-01" })).rejects.toThrow(/BLOQUEADO|não existe/);
+    await expect(odoo.registerPayment({ moveLineId: 1, amount: "1.00", paymentDate: "2026-01-01", ref: "asaas:trava-de-escrita" })).rejects.toThrow(/BLOQUEADO|não existe/);
   });
 
   it("autentica no /json/2 e lê faturas de cliente postadas com o shape que o motor espera", async () => {
