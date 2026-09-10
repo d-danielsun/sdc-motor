@@ -1,0 +1,34 @@
+name: gitleaks
+
+# Barreira de segredos. Este repo lida com chave do Asaas, chave do Odoo e dois tokens de
+# webhook: um segredo real colado num arquivo (inclusive num teste) não pode ser commitado.
+# Usa o binário oficial (MIT) em vez da gitleaks-action, que exige licença paga em org.
+# Config e allowlist: .gitleaks.toml na raiz.
+#
+# O id do job (gitleaks) é o `context` do required status check em scripts/branch-protection.sh.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GITLEAKS_VERSION: "8.30.1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+
+      - name: instalar o gitleaks
+        run: |
+          curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -o /tmp/gitleaks.tgz
+          tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
+          /tmp/gitleaks version
+
+      - name: varrer a árvore de trabalho
+        run: /tmp/gitleaks detect --no-git --source . --config .gitleaks.toml --redact --verbose

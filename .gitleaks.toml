@@ -1,0 +1,22 @@
+# gitleaks — impede que segredo novo entre no repo. Roda no CI (.github/workflows/gitleaks.yml).
+# Rodar igual na mão: gitleaks detect --no-git --source . --config .gitleaks.toml --redact
+title = "sdc-motor gitleaks"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = """
+Allowlist MÍNIMA, de propósito, e verificada: com só esta linha a árvore atual varre limpa,
+então não há motivo para abrir mais nada. `test/` fica FORA — o critério de aceitação da
+issue #11 é que um segredo plantado num arquivo de teste seja pego; allowlistar fixtures
+tornaria esse critério vacuamente verdadeiro e deixaria passar chave real colada num teste.
+
+Antes de adicionar uma linha aqui: confira que o achado é mesmo placeholder, e prefira
+trocar o valor no arquivo a abrir exceção. Regex aqui é avaliado por RE2 — sem
+backreference (`\\1`), sem lookahead.
+"""
+paths = [
+  # Só nomes de variáveis, sem valores — é a documentação do que configurar.
+  '''^\.env\.example$''',
+]

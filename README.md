@@ -54,6 +54,32 @@ Listas devolvem `{ data, total, limit, offset }` (`limit` 1–200, default 50). 
 
 `worker` (1 min: eventos do Odoo e do Asaas, lotes de 20) · `sync-invoices` (15 min, varredura de segurança da ida, páginas de 200) · `reconcile-daily` (06:00 BRT, relê RECEIVED e RECEIVED_IN_CASH dos últimos `RECONCILE_LOOKBACK_DAYS`, e apaga `audit_log`/eventos processados > 90 dias) · `watchdog` (15 min: fila interrompida, penalidades, silêncio, idade da key). Um job nunca sobrepõe a si mesmo. Uma vez por ambiente: `WEBHOOK_PUBLIC_URL=… ALERT_EMAIL=… npm run job -- register-asaas-webhook`.
 
+## CI
+
+Todo PR e todo push na `main` rodam dois workflows. Nenhum deles tem filtro `paths:` de
+propósito: filtro de path é como uma suíte morre calada.
+
+- **`ci`** (`.github/workflows/ci.yml`) — job **`test`**: sobe um `postgres:16` de serviço,
+  cria o `motor_test`, aplica as migrations nos dois bancos e roda `npm run typecheck` mais
+  os 97 testes (`test/unit` + `test/db` contra Postgres real). Job **`build`**: `docker build`
+  da imagem, que executa `npm run build` no estágio de build. Job **`sandbox`**: só em
+  `workflow_dispatch`, toca o sandbox real do Asaas e é pulado com aviso se o segredo
+  `ASAAS_SANDBOX_KEY` não estiver cadastrado.
+- **`gitleaks`** (`.github/workflows/gitleaks.yml`) — varre a árvore com o binário oficial
+  pinado. A allowlist em `.gitleaks.toml` cobre só o `.env.example`. Fixtures de teste ficam
+  de fora de propósito, para que uma chave real colada num teste seja pega.
+
+O CI que roda mas não bloqueia é decoração. Quem transforma os workflows em gate é
+`./scripts/branch-protection.sh`, idempotente, que exige `test`, `build` e `gitleaks` verdes,
+com a branch atualizada em relação à base e a regra valendo também para admin. Rode uma vez
+por repositório (`--dry-run` mostra o payload sem alterar nada). Em repositório privado, a
+proteção de branch depende de plano pago do GitHub; sem ele o CI sinaliza mas não bloqueia,
+e o script diz isso na falha.
+
+Para rodar a mesma coisa na máquina: `npm run db:up && npm run db:migrate && npm run
+db:migrate:test && npm run typecheck && npm test`. O `DATABASE_URL_TEST` sobrescreve o banco
+de teste quando ele não está na porta local padrão, que é o que o CI faz.
+
 ## O que ainda depende de acesso externo
 
 - **S0.1/S0.3** — `OdooJson2Client.registerPayment` segue o desenho da spec; campos exigidos pelo wizard e o tratamento de diferença (juros/multa) se confirmam na duplicata de teste.
