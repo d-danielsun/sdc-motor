@@ -2,6 +2,7 @@
 // produzir a exceção que ele promete, a demonstração mente — então cada cenário tem teste.
 // Roda contra o banco de teste, chamando as mesmas funções que o CLI chama.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { todayBrt } from "../../src/adapters/clock.js";
 import { createPool } from "../../src/adapters/db/pool.js";
 import {
   CENARIOS, assertDemoUrl, cicloFeliz, criarCtx, demoDeps, deslocar, divergente, filaParada,
@@ -9,7 +10,7 @@ import {
 } from "../../src/cli/demo.js";
 import { DB_URL, dbReachable } from "../helpers.js";
 
-const hoje = new Date().toISOString().slice(0, 10);
+const hoje = todayBrt(new Date());   // o mesmo dia civil que o CLI usa
 let pool: ReturnType<typeof createPool>;
 
 beforeAll(async () => {

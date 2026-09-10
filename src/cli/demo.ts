@@ -13,7 +13,7 @@
 // datas fixas envelhece e passa a mostrar tudo em "31_mais" depois de dois meses.
 import { pathToFileURL } from "node:url";
 import pg from "pg";
-import { fixedClock } from "../adapters/clock.js";
+import { fixedClock, todayBrt } from "../adapters/clock.js";
 import { createLockPool, createPool } from "../adapters/db/pool.js";
 import { applyMigrations } from "../adapters/db/migrations.js";
 import { createPgRepo } from "../adapters/db/repo.js";
@@ -347,7 +347,9 @@ export async function main(argv: string[] = process.argv.slice(2), env: NodeJS.P
   const lockPool = createLockPool(url);
   const t0 = Date.now();
   try {
-    const hoje = new Date().toISOString().slice(0, 10);
+    // Dia civil de São Paulo, como todo o resto do motor (due_date e payment_date são
+    // datas civis BRT). Em UTC, das 21h à meia-noite o demo semearia o dia seguinte.
+    const hoje = todayBrt(new Date());
     await resetDemoDb(pool, hoje);
     const { deps } = demoDeps(pool, hoje, lockPool);
     await semear(criarCtx(deps, hoje), cenario);
