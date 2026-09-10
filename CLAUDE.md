@@ -3,8 +3,8 @@
 Motor de cobrança Odoo ↔ Asaas da SDC (deal Salvei, R$ 8k/mês). Fatura postada no Odoo → boleto no Asaas → `PAYMENT_RECEIVED` → baixa na parcela exata do Odoo, com console de exceções. Stack: Node 24 + TypeScript, Hono, `pg`, Postgres. **Invariante: o núcleo (`src/core`) não importa nada de Supabase, Deno ou HTTP — roda igual em Supabase hoje e em container/GCP/AWS/servidor físico amanhã.**
 
 ## Como rodar
-- `npm run db:up && npm run db:migrate` — Postgres local (porta 55432) + schema.
-- `npm test` — unit (sem rede). `scripts/with-op.sh npm run test:sandbox` — vivo contra o sandbox do Asaas (key vem do 1Password, nunca de arquivo).
+- `npm run db:up && npm run db:migrate && npm run db:migrate:test` — Postgres local (porta 55432): banco `motor` (dev) + `motor_test` (testes). Volume antigo sem `motor_test`? `npm run db:reset`.
+- `npm run test:unit` — puro. `npm test` — unit + fluxo contra Postgres real (`motor_test`). `scripts/with-op.sh npm run test:sandbox` — vivo contra o sandbox do Asaas (key vem do 1Password, nunca de arquivo).
 - `npm run dev` — API local (`/health`, `/webhook-asaas`, `/webhook-odoo?k=`). `npm run job -- <nome>` — roda um job (sync-invoices, reconcile-daily, watchdog…).
 
 ## Estrutura
@@ -27,3 +27,8 @@ Motor de cobrança Odoo ↔ Asaas da SDC (deal Salvei, R$ 8k/mês). Fatura posta
 - Não dê baixa em `PAYMENT_CONFIRMED`; só em `PAYMENT_RECEIVED`.
 - Não responda nada além de 200 rápido nos webhooks: Asaas interrompe a fila após 15 falhas; o Odoo desiste em 1 s e não reenvia.
 - Não rode contra `sdctech.odoo.com` (produção) com escrita — S0.3/S0.4 só em duplicata.
+- Não aceite resposta não-JSON/redirect de Odoo ou Asaas como sucesso, e não marque cobrança como `received` sem o Odoo confirmar (parcela lida por id, residual antes×depois do wizard). QA 09/09: base expirada devolvendo HTML gerou baixa falsa.
+- Não use o payload do webhook do Asaas como verdade: releia o pagamento (`asaas.getPayment`) antes de qualquer transição — o webhook não é assinado.
+- Não escreva `where status=...` de transição sem `WHERE status IN (…)` (`charges.transition`), nem baixa fora de `markReceived` (transação + unique).
+- Não chame Odoo/Asaas segurando um lock desnecessário; os advisory locks (`withLock`) são por cobrança/fatura/parceiro e são `try` (busy → volta pra fila), nunca bloqueantes.
+- Ao sobrescrever método de um fake num teste (`w.deps.odoo.x = …`), restaure com `delete (w.odoo as any).x` — `w.deps.odoo` É o fake.

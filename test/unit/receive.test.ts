@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { classifyReceipt } from "../../src/core/receive.js";
-import { normalizeAsaasEvent, normalizeAsaasPayment } from "../../src/core/asaasPayload.js";
+import { asaasId, normalizeAsaasEvent, normalizeAsaasPayment } from "../../src/core/asaasPayload.js";
 import type { AsaasPayment } from "../../src/core/types.js";
 
 const base: AsaasPayment = {
@@ -25,14 +25,22 @@ describe("classifyReceipt", () => {
   });
 });
 
-describe("normalização tolerante do payload", () => {
+describe("normalização tolerante do payload (nunca lança)", () => {
   it("aceita campo desconhecido e number/string", () => {
     const p = normalizeAsaasPayment({ id: "pay_x", value: 12.3, novoCampo: { a: 1 }, netValue: "12.00", status: "RECEIVED" });
     expect(p).toMatchObject({ id: "pay_x", value: "12.30", netValue: "12.00", originalValue: null, deleted: false });
   });
-  it("sem id/value → null (nunca lança)", () => {
+  it("sem id/value, value inválido, id com caractere de path → null", () => {
     expect(normalizeAsaasPayment({ foo: 1 })).toBeNull();
+    for (const v of ["abc", "", "1.234", "12,50", NaN, null]) expect(normalizeAsaasPayment({ id: "pay_1", value: v }), String(v)).toBeNull();
+    expect(normalizeAsaasPayment({ id: "pay_1/../webhooks/x", value: 10 })).toBeNull();
     expect(normalizeAsaasEvent({ id: "evt", event: "PAYMENT_RECEIVED" })).toBeNull();
     expect(normalizeAsaasEvent("lixo")).toBeNull();
+    expect(normalizeAsaasEvent([])).toBeNull();
+  });
+  it("asaasId só aceita o charset conhecido", () => {
+    expect(asaasId("pay_b64p10j83x0jfs7y")).toBe("pay_b64p10j83x0jfs7y");
+    expect(asaasId("228858f9-ea17-4764-b4ea-689d6c92a36b")).toBeTruthy();
+    expect(asaasId("pay?x=1")).toBeNull(); expect(asaasId("a".repeat(65))).toBeNull(); expect(asaasId(7)).toBe("7");
   });
 });

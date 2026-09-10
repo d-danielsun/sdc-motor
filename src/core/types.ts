@@ -3,12 +3,12 @@ export type { Money };
 
 export type ChargeStatus =
   | "pending" | "created" | "confirmed" | "received" | "settled" | "cancelled" | "refunded" | "exception";
-export type ProcessStatus = "pending" | "done" | "error" | "ignored";
+export type ProcessStatus = "pending" | "processing" | "done" | "error" | "ignored";
 export type ExceptionType =
   | "customer_missing_document" | "charge_create_failed" | "payment_unmatched" | "amount_divergent"
   | "reversal_pending" | "queue_interrupted" | "stale_heartbeat" | "api_key_expiring"
-  | "writeoff_needed" | "webhook_penalized";
-export type DiffPolicy = "juros_multa" | "in_cash" | "writeoff_financeiro" | "exception";
+  | "writeoff_needed" | "webhook_penalized" | "integration_error";
+export type DiffPolicy = "juros_multa" | "in_cash" | "writeoff_financeiro" | "exception" | "ja_baixada_no_odoo";
 export type AuditDirection = "odoo_out" | "asaas_out" | "asaas_in" | "odoo_in";
 
 // ── Odoo (o que o motor precisa saber de uma fatura) ─────────────────────────

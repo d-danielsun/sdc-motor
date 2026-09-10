@@ -14,6 +14,9 @@ export class FakeAsaas implements AsaasClient {
   async findCustomerByExternalRef(ref: string): Promise<AsaasCustomer | null> {
     return [...this.customers.values()].find((c) => c.externalReference === ref) ?? null;
   }
+  async findCustomerByDocument(cpfCnpj: string): Promise<AsaasCustomer | null> {
+    return [...this.customers.values()].find((c) => c.cpfCnpj === cpfCnpj) ?? null;
+  }
   async createCustomer(c: Parameters<AsaasClient["createCustomer"]>[0]): Promise<AsaasCustomer> {
     if (!/^\d{11}$|^\d{14}$/.test(c.cpfCnpj)) throw new Error("fake asaas: cpfCnpj inválido");
     const cust: AsaasCustomer = { id: this.next("cus"), name: c.name, cpfCnpj: c.cpfCnpj, email: c.email ?? null, externalReference: c.externalReference, notificationDisabled: c.notificationDisabled };
@@ -38,14 +41,17 @@ export class FakeAsaas implements AsaasClient {
     return { ...pay };
   }
   async getPayment(id: string): Promise<AsaasPayment | null> { const p = this.payments.get(id); return p ? { ...p } : null; }
+  async findPaymentByExternalRef(ref: string): Promise<AsaasPayment | null> {
+    return [...this.payments.values()].filter((p) => p.externalReference === ref && !p.deleted).map((p) => ({ ...p }))[0] ?? null;
+  }
   async deletePayment(id: string): Promise<void> {
     const p = this.payments.get(id);
-    if (!p) throw new Error("fake asaas: payment inexistente");
+    if (!p) return;
+    if (p.status === "RECEIVED" || p.status === "RECEIVED_IN_CASH") throw new Error("fake asaas: não é possível apagar cobrança recebida");
     p.deleted = true; this.deleted.push(id);
   }
   async *listPayments(f: { status?: string; paymentDateFrom?: string; externalReference?: string }): AsyncIterable<AsaasPayment> {
     for (const p of this.payments.values()) {
-      if (p.deleted) continue;
       if (f.status && p.status !== f.status) continue;
       if (f.paymentDateFrom && (p.paymentDate ?? "") < f.paymentDateFrom) continue;
       if (f.externalReference && p.externalReference !== f.externalReference) continue;
@@ -78,6 +84,13 @@ export class FakeAsaas implements AsaasClient {
     p.paymentDate = date; p.clientPaymentDate = date; p.creditDate = date;
     p.netValue = money((Number(p.value) - 1.99).toFixed(2));
     return this.event("PAYMENT_RECEIVED", p);
+  }
+  /** Muda o estado do pagamento no "Asaas" (o worker relê o objeto vivo, então o evento sozinho não basta). */
+  setStatus(id: string, status: string, patch: Partial<AsaasPayment> = {}): AsaasPayment {
+    const p = this.payments.get(id);
+    if (!p) throw new Error("fake asaas: payment inexistente");
+    Object.assign(p, patch, { status });
+    return { ...p };
   }
   event(event: string, p: AsaasPayment): AsaasWebhookEvent {
     return { id: this.next("evt"), event, dateCreated: "2026-09-10 10:00:00", payment: { ...p } };
