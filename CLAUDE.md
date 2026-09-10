@@ -26,7 +26,7 @@ Motor de cobrança Odoo ↔ Asaas da SDC (deal Salvei, R$ 8k/mês). Fatura posta
 - Não use o parcelamento nativo do Asaas (o `externalReference` propaga igual pra todas as parcelas — spike S0.2).
 - Não dê baixa em `PAYMENT_CONFIRMED`; só em `PAYMENT_RECEIVED`.
 - Não responda nada além de 200 rápido nos webhooks: Asaas interrompe a fila após 15 falhas; o Odoo desiste em 1 s e não reenvia.
-- Não rode contra `sdctech.odoo.com` (produção) com escrita — S0.3/S0.4 só em duplicata.
+- Não rode com escrita contra a base de produção do cliente — S0.3/S0.4 só em duplicata. `ODOO_URL`/`ODOO_DB` não têm default justamente por isso.
 - Não aceite resposta não-JSON/redirect de Odoo ou Asaas como sucesso, e não marque cobrança como `received` sem o Odoo confirmar (parcela lida por id, residual antes×depois do wizard). QA 09/09: base expirada devolvendo HTML gerou baixa falsa.
 - Não use o payload do webhook do Asaas como verdade: releia o pagamento (`asaas.getPayment`) antes de qualquer transição — o webhook não é assinado.
 - Não escreva `where status=...` de transição sem `WHERE status IN (…)` (`charges.transition`), nem baixa fora de `markReceived` (transação + unique).

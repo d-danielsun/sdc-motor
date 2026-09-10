@@ -3,6 +3,6 @@
 # Uso: scripts/with-op.sh npm run test:sandbox
 set -euo pipefail
 export ASAAS_URL="${ASAAS_URL:-https://api-sandbox.asaas.com/v3}"
-export ASAAS_API_KEY="$(op item get veh6rk2s46irol6pddmcyobe3u --fields credential --reveal)"   # "Sandbox API Key AsaaS - SDC"
+export ASAAS_API_KEY="$(op item get "${ASAAS_1P_ITEM:-Sandbox API Key AsaaS - SDC}" --fields credential --reveal)"
 export DATABASE_URL="${DATABASE_URL:-postgres://motor:motor@localhost:55432/motor}"
 exec "$@"

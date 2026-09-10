@@ -63,7 +63,7 @@ Do `/gstack-review` (8 especialistas + adversarial Claude + 2 passes do Codex), 
 - Roteiro §2 (curl): `scratchpad/qa-roteiro.log` (sessão de 09/09) — HTTP: health, webhooks, console, validações, permissões
 - Testes automatizados: `npm test` — **97 testes verdes** (10 arquivos: unit · fluxo · console · robustez, incluindo os casos do Red Team) · `scripts/with-op.sh npm run test:sandbox` — **3 verdes** no sandbox real do Asaas · `npm run test:odoo` pronto (somente-leitura, trava contra escrita) pra quando houver API key
 - Container: `docker compose --profile motor up --build` → `migrate` aplica 0001–0004 e sai, `motor` sobe, `/health` 200, console 401/400/200 (AC14)
-- Sondas §3 executadas contra o Odoo real expirado (`sdctech-danieltestes`): nenhuma baixa falsa após as correções; `integration_error` visível no `health-report`
+- Sondas §3 executadas contra o Odoo real expirado (a duplicata de teste, já vencida): nenhuma baixa falsa após as correções; `integration_error` visível no `health-report`
 - Review: `/gstack-review` (testing 19, maintainability 22, security 12, performance 11, data-migration 13, api-contract 14, simplification 6 advisory, adversarial Claude 24) + Codex adversarial 28 + Codex structured 2 P1 + **Red Team 18** → todos os P1 corrigidos; 8 issues pro resto
 
 ## 5. Limitações conhecidas → issues

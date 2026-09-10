@@ -234,7 +234,7 @@ describe("redes de segurança", () => {
   });
   it("watchdog: fila interrompida → exceção + reativação (1×/h); penalidades subindo → webhook_penalized", async () => {
     const w = await fresh();
-    const wh = await w.asaas.createWebhook({ name: "Salvei", url: "https://x/webhook-asaas", email: "f@sdc.com.br", authToken: TOKEN, events: ["PAYMENT_RECEIVED"] });
+    const wh = await w.asaas.createWebhook({ name: "Salvei", url: "https://x/webhook-asaas", email: "financeiro@exemplo.com.br", authToken: TOKEN, events: ["PAYMENT_RECEIVED"] });
     await w.deps.repo.config.set("ASAAS_WEBHOOK_ID", wh.id);
     w.asaas.interrupt(wh.id, 15);
     expect(await watchdog(w.deps)).toMatchObject({ interrupted: true, reactivated: true, penalizedDelta: 15 });
