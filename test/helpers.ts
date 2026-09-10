@@ -2,6 +2,7 @@ import { createPool } from "../src/adapters/db/pool.js";
 import { createPgRepo } from "../src/adapters/db/repo.js";
 import { FakeAsaas } from "../src/adapters/fakes/fakeAsaas.js";
 import { FakeOdoo } from "../src/adapters/fakes/fakeOdoo.js";
+import { FakeNotifier } from "../src/adapters/notify/fake.js";
 import { fixedClock } from "../src/adapters/clock.js";
 import { createServer } from "../src/app/server.js";
 import { createConsoleApi } from "../src/app/console.js";
@@ -14,7 +15,7 @@ import type { Deps } from "../src/core/ports.js";
 
 // Banco SEPARADO do de desenvolvimento (lição U4 do QA: os testes sujavam a config do dev).
 export const DB_URL = process.env.DATABASE_URL_TEST ?? "postgres://motor:motor@localhost:55432/motor_test";
-const TABLES = ["reconciliations", "exceptions", "charges", "customers_map", "webhook_events", "odoo_events", "sync_watermarks", "audit_log", "console_sessions", "console_users"];
+const TABLES = ["reconciliations", "exceptions", "charges", "customers_map", "webhook_events", "odoo_events", "sync_watermarks", "audit_log", "console_sessions", "console_users", "alerts_sent"];
 export const TOKEN = "t".repeat(32), KEY = "k".repeat(32), CONSOLE_TOKEN = "c".repeat(40);
 /** Usuário que o `world()` cria e loga: as chamadas de `api()` são desta pessoa. */
 export const USUARIO = { email: "financeiro@exemplo.com.br", name: "Financeiro", senha: "senha-de-teste-1" };
@@ -31,6 +32,8 @@ export async function dbReachable(): Promise<boolean> {
 export interface World {
   deps: Deps; odoo: FakeOdoo; asaas: FakeAsaas; pool: ReturnType<typeof createPool>;
   auth: ReturnType<typeof createAuthStore>;
+  /** Canal de alerta em memória: `w.notify.enviados` é o que teria sido mandado. */
+  notify: FakeNotifier;
   logs: Array<{ msg: string; ctx?: Record<string, unknown> }>;
   app(): ReturnType<typeof createServer>;
   /** Cookie de sessão da pessoa logada — o que autentica as rotas de dados. */
@@ -41,7 +44,7 @@ export interface World {
 }
 
 /** Mundo limpo: tabelas truncadas, app_config no default do registro (com IDA ligada, salvo pedido contrário). */
-export async function world(o: { today?: string; idaEnabled?: boolean; cutoff?: string | null; freio?: FreioDeLogin } = {}): Promise<World> {
+export async function world(o: { today?: string; idaEnabled?: boolean; cutoff?: string | null; freio?: FreioDeLogin; destinatarios?: string[] } = {}): Promise<World> {
   const pool = createPool(DB_URL);
   await pool.query(`truncate ${TABLES.join(", ")} restart identity cascade`);
   await pool.query("delete from app_config");
@@ -51,7 +54,8 @@ export async function world(o: { today?: string; idaEnabled?: boolean; cutoff?: 
   const odoo = new FakeOdoo();
   const asaas = new FakeAsaas();
   const logs: World["logs"] = [];
-  const deps: Deps = { repo, odoo, asaas, clock: fixedClock(`${o.today ?? "2026-09-10"}T13:00:00.000Z`), log: (msg, ctx) => logs.push({ msg, ctx }) };
+  const notify = new FakeNotifier(o.destinatarios ?? ["financeiro@exemplo.com.br"]);
+  const deps: Deps = { repo, odoo, asaas, clock: fixedClock(`${o.today ?? "2026-09-10"}T13:00:00.000Z`), log: (msg, ctx) => logs.push({ msg, ctx }), notify };
   const auth = createAuthStore(pool);
   const consoleApi = createConsoleApi({ deps, queries: createConsoleQueries(pool), token: CONSOLE_TOKEN, jobs: createJobRunner(deps), auth, freio: o.freio });
   const app = () => createServer({ repo, asaasWebhookToken: TOKEN, odooWebhookKey: KEY, log: () => {}, console: consoleApi });
@@ -68,7 +72,7 @@ export async function world(o: { today?: string; idaEnabled?: boolean; cutoff?: 
     const res = await app().request(`/api/v1${path}`, { ...init, headers });
     return { status: res.status, body: await res.json().catch(() => null), headers: res.headers };
   };
-  return { deps, odoo, asaas, pool, auth, logs, app, api, sessao, close: () => pool.end() };
+  return { deps, odoo, asaas, pool, auth, notify, logs, app, api, sessao, close: () => pool.end() };
 }
 
 /** Parceiro 10 + fatura 100 com 2 parcelas de 100 — o cenário padrão. */

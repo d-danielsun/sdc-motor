@@ -160,10 +160,16 @@ export function createPgRepo(pool: pg.Pool, lockPool: pg.Pool = pool): Repo {
     exceptions: {
       async open(e) { await db.query("insert into exceptions (type, ref_table, ref_id, detail) values ($1,$2,$3,$4::jsonb)", [e.type, e.refTable ?? null, e.refId ?? null, JSON.stringify(e.detail ?? null)]); },
       async openOnce(e) {
-        const r = await db.query(`insert into exceptions (type, ref_table, ref_id, detail) select $1,$2,$3,$4::jsonb
-          where not exists (select 1 from exceptions where status='open' and type=$1 and ref_table is not distinct from $2 and ref_id is not distinct from $3)`,
-          [e.type, e.refTable ?? null, e.refId ?? null, JSON.stringify(e.detail ?? null)]);
-        return (r.rowCount ?? 0) > 0;
+        const p = [e.type, e.refTable ?? null, e.refId ?? null, JSON.stringify(e.detail ?? null)];
+        const r = await db.query<{ id: string }>(`insert into exceptions (type, ref_table, ref_id, detail) select $1,$2,$3,$4::jsonb
+          where not exists (select 1 from exceptions where status='open' and type=$1 and ref_table is not distinct from $2 and ref_id is not distinct from $3)
+          returning id`,
+          p);
+        if (r.rows[0]) return { id: Number(r.rows[0].id), nova: true };
+        // Já havia uma aberta: devolve o id DELA, porque o alerta linka o console de qualquer jeito.
+        const existente = await one<{ id: string }>(`select id from exceptions where status='open' and type=$1
+          and ref_table is not distinct from $2 and ref_id is not distinct from $3 order by id limit 1`, p.slice(0, 3));
+        return { id: Number(existente?.id ?? 0), nova: false };
       },
       async hasOpen(type, refTable, refId) {
         return (await one("select 1 from exceptions where status='open' and type=$1 and ($2::text is null or ref_table=$2) and ($3::bigint is null or ref_id=$3) limit 1", [type, refTable ?? null, refId ?? null])) !== null;
@@ -182,6 +188,29 @@ export function createPgRepo(pool: pg.Pool, lockPool: pg.Pool = pool): Repo {
     watermarks: {
       async get(key) { const r = await one<{ t: Date; id: string }>("select last_write_date as t, last_id as id from sync_watermarks where key=$1", [key]); return r ? { writeDate: r.t.toISOString(), id: Number(r.id) } : null; },
       async set(key, w) { await db.query("insert into sync_watermarks (key, last_write_date, last_id) values ($1,$2,$3) on conflict (key) do update set last_write_date=excluded.last_write_date, last_id=excluded.last_id, updated_at=now()", [key, w.writeDate, w.id]); },
+    },
+    alerts: {
+      async reservar(a) {
+        // UMA statement: o `where not exists` é avaliado sob o mesmo snapshot do insert, então
+        // dois processos no mesmo instante não inserem os dois. Janela DESLIZANTE (`now() -
+        // intervalo`), não balde fixo — balde manda um alerta 5h59 e outro 6h01.
+        const r = await db.query<{ id: string }>(
+          `insert into alerts_sent (alert_key, channel, recipients, ok)
+           select $1, $2, $3, false
+           where not exists (select 1 from alerts_sent where alert_key = $1 and sent_at > now() - ($4 || ' minutes')::interval)
+           returning id`,
+          [a.alertKey, a.channel, a.recipients, String(a.janelaMinutos)],
+        );
+        return r.rows[0] ? Number(r.rows[0].id) : null;
+      },
+      async registrar(id, r) {
+        await db.query("update alerts_sent set ok = $2, error = $3 where id = $1", [id, r.ok, r.error ?? null]);
+      },
+      async recentes(limit = 50) {
+        return (await all<{ id: string; alert_key: string; sent_at: string; ok: boolean; error: string | null; recipients: string }>(
+          "select id, alert_key, sent_at, ok, error, recipients from alerts_sent order by sent_at desc, id desc limit $1", [limit],
+        )).map((x) => ({ id: Number(x.id), alertKey: x.alert_key, sentAt: new Date(x.sent_at), ok: x.ok === true, error: x.error, recipients: x.recipients }));
+      },
     },
     audit: {
       async log(e) {

@@ -35,7 +35,7 @@ Container completo (AC14 — a prova de que não depende do Supabase): `docker c
 - **A varredura não trava:** o watermark é um balde de 1 s (o Odoo devolve `write_date` truncado; 200+ faturas confirmadas no mesmo segundo são drenadas por id); uma fatura que o Odoo recusa 3 varreduras seguidas vira exceção com o id e a fila anda.
 - **Nada em silêncio:** falha definitiva de evento ou de job vira exceção reprocessável; `IDA_ENABLED` é o kill switch de toda emissão; boot recusa banco sem migração.
 
-## API do console (`/api/v1`, `Authorization: Bearer $CONSOLE_TOKEN`)
+## API do console (`/api/v1`, cookie de sessão)
 
 | Rota | O quê |
 |---|---|
@@ -46,13 +46,53 @@ Container completo (AC14 — a prova de que não depende do Supabase): `docker c
 | `GET /health-report` | kill switch, régua, abertas, exceções por tipo, último evento/varredura/reconcile/watchdog, fila do Asaas, idade da key |
 | `GET /config` · `PUT /config/:key {value}` | `IDA_ENABLED` (gate R1), `TOLERANCE_BRL` (≤100), `GO_LIVE_CUTOFF_DATE`, `JUROS_MULTA_AUTO`, `RECONCILE_LOOKBACK_DAYS` (1–30) |
 | `POST /customers/enable-notifications` | gate R3: liga a régua nos clientes existentes e como política pros próximos |
-| `POST /jobs/:name` | pro cron externo (Supabase): roda `worker`, `sync-invoices`, `reconcile-daily` ou `watchdog` com o mesmo guard de não-sobreposição; 502 se o job falhou |
+| `POST /session {email,password}` · `DELETE /session` · `GET /me` | login, logout e quem está logado |
+| `POST /jobs/:name` | pro cron externo: roda `worker`, `sync-invoices`, `reconcile-daily` ou `watchdog` com o mesmo guard de não-sobreposição; 502 se o job falhou. **A única rota que ainda aceita `Bearer $CONSOLE_TOKEN`** |
 
-Listas devolvem `{ data, total, limit, offset }` (`limit` 1–200, default 50). Erros devolvem sempre `{ ok:false, code, error }` com `code` ∈ `invalid_input` 400 · `unauthorized` 401 · `not_found` 404 · `invalid_state`/`busy` 409 · `upstream` 502 · `config`/`internal` 500. O header `x-user` vira `resolved_by` — é **asserção do cliente**; identidade forte vem com o JWT do Supabase Auth (issue #1).
+Listas devolvem `{ data, total, limit, offset }` (`limit` 1–200, default 50). Erros devolvem sempre `{ ok:false, code, error }` com `code` ∈ `invalid_input` 400 · `unauthorized` 401 · `not_found` 404 · `invalid_state`/`busy` 409 · `upstream` 502 · `config`/`internal` 500.
+
+Toda rota de dados exige **cookie de sessão** de uma pessoa; `resolved_by` é o e-mail dela, e o
+header `x-user` não é mais lido. O `CONSOLE_TOKEN` abre só `POST /jobs/:name`. Detalhes na seção
+Console.
 
 ## Jobs
 
 `worker` (1 min: eventos do Odoo e do Asaas, lotes de 20) · `sync-invoices` (15 min, varredura de segurança da ida, páginas de 200) · `reconcile-daily` (06:00 BRT, relê RECEIVED e RECEIVED_IN_CASH dos últimos `RECONCILE_LOOKBACK_DAYS`, e apaga `audit_log`/eventos processados > 90 dias) · `watchdog` (15 min: fila interrompida, penalidades, silêncio, idade da key). Um job nunca sobrepõe a si mesmo. Uma vez por ambiente: `WEBHOOK_PUBLIC_URL=… ALERT_EMAIL=… npm run job -- register-asaas-webhook`.
+
+## Alertas críticos
+
+Quando a fila do Asaas é interrompida, nenhum pagamento chega e nenhuma baixa acontece. O motor
+já abria exceção e tentava reativar, mas ninguém ficava sabendo, e os eventos do Asaas morrem em
+14 dias: uma fila parada numa sexta pode custar o fim de semana.
+
+Quatro alertas saem por e-mail, no momento em que a condição é detectada.
+
+| Alerta | Quando | Silêncio |
+|---|---|---|
+| Fila do Asaas interrompida | o watchdog vê `interrupted` no webhook | 6 h |
+| Job falhando | `runJob` falha (Odoo fora, Asaas fora, banco fora) | 6 h por job |
+| Nenhum pagamento chegou | 8 h sem evento em horário comercial, com cobrança aberta | 6 h |
+| Chave do Odoo vencendo | chave com 75 dias ou mais | 24 h |
+
+O e-mail diz o que aconteceu, o que o motor já tentou sozinho e traz o link direto para a
+exceção no console. Sem `RESEND_API_KEY` o motor sobe igual, com o canal em no-op.
+
+O dedupe é do banco e a janela é **deslizante**, não balde fixo: balde de seis horas manda um
+alerta às 5h59 e outro às 6h01. A reserva da janela é uma única instrução SQL, o que também
+serve de trava entre processos concorrentes — dois motores no mesmo instante mandam um e-mail
+só, e há teste que prova isso com oito chamadas simultâneas.
+
+Duas trocas conscientes. A linha em `alerts_sent` registra a **tentativa**, não o sucesso: se o
+processo morrer entre reservar e enviar, aquele aviso se perde e o próximo sai na janela
+seguinte, porque preferimos perder um aviso a mandar dez. E não há retry dentro do tick: retry
+imediato é o comportamento certo para uma baixa e errado para um e-mail.
+
+Uma limitação declarada: o alerta depende do banco, porque é lá que mora o dedupe. Uma queda
+total do Postgres não é notificada por e-mail. Quem cobre esse caso é o healthcheck do
+orquestrador em `/health`, não o motor.
+
+Para operar: `docs/RUNBOOK-R1.md` leva do zero até a emissão ligada, e `docs/GO-LIVE.md` é o
+checklist do que não pode faltar antes.
 
 ## Console
 

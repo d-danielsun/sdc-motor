@@ -14,6 +14,7 @@ Motor de cobrança Odoo ↔ Asaas da SDC (deal Salvei, R$ 8k/mês). Fatura posta
 - `src/app/` — Hono (webhooks em `server.ts`, console em `console.ts`) + scheduler. `src/cli/` — migrate, job, demo. `public/` — SPA do console, sem build. `db/migrations/` — SQL puro, ordem numérica.
 - Read model do console: `src/core/console.ts` (interface) + `src/adapters/db/console.ts` (SQL). Ações: `src/core/usecases/console.ts`.
 - Spec-fonte: `~/w/salvei/propostas/SDC/02-SPEC.md` (v1.1). Contratos Odoo/Asaas estão lá, não aqui.
+- Implantação: `docs/RUNBOOK-R1.md` (zero → emissão ligada) e `docs/GO-LIVE.md` (checklist). O wizard do deal aponta para os dois.
 
 ## Convenções
 - Dinheiro: `numeric(14,2)` no banco, `string` decimal no TS (nunca `number` pra somar). Datas civis (`due_date`, `payment_date`) são `date` em America/Sao_Paulo.
@@ -32,5 +33,6 @@ Motor de cobrança Odoo ↔ Asaas da SDC (deal Salvei, R$ 8k/mês). Fatura posta
 - Não use o payload do webhook do Asaas como verdade: releia o pagamento (`asaas.getPayment`) antes de qualquer transição — o webhook não é assinado.
 - Não escreva `where status=...` de transição sem `WHERE status IN (…)` (`charges.transition`), nem baixa fora de `markReceived` (transação + unique).
 - Não volte a ler `x-user` para saber quem agiu: desde a #13 quem age é a sessão. E não use `innerHTML` no `public/app.js` — nome de cliente vem do Odoo.
+- Não faça alerta derrubar job, nem retry de alerta dentro do tick: a janela em `alerts_sent` é deslizante e a reserva (1 statement) é a trava entre processos.
 - Não chame Odoo/Asaas segurando um lock desnecessário; os advisory locks (`withLock`) são por cobrança/fatura/parceiro e são `try` (busy → volta pra fila), nunca bloqueantes.
 - Ao sobrescrever método de um fake num teste (`w.deps.odoo.x = …`), restaure com `delete (w.odoo as any).x` — `w.deps.odoo` É o fake.

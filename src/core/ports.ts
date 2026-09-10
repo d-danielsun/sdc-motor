@@ -1,6 +1,6 @@
 // Portas: tudo que o núcleo precisa do mundo. Adaptadores implementam; fakes também.
 import type {
-  AsaasCustomer, AsaasPayment, AsaasWebhook, AuditDirection, Charge, ChargeStatus, CustomerMap,
+  Alert, AsaasCustomer, AsaasPayment, AsaasWebhook, AuditDirection, Charge, ChargeStatus, CustomerMap,
   DiffPolicy, ExceptionType, Money, OdooInvoice, OdooInvoiceLine, OdooPartner, OdooPaymentResult,
   ProcessStatus, StoredAsaasEvent, StoredOdooEvent,
 } from "./types.js";
@@ -102,8 +102,10 @@ export interface Repo {
   };
   exceptions: {
     open(e: { type: ExceptionType; refTable?: string; refId?: number; detail?: unknown }): Promise<void>;
-    /** Abre só se não houver outra ABERTA do mesmo tipo/ref — o padrão para quase tudo (varreduras repetem). */
-    openOnce(e: { type: ExceptionType; refTable?: string; refId?: number; detail?: unknown }): Promise<boolean>;
+    /** Abre só se não houver outra ABERTA do mesmo tipo/ref — o padrão para quase tudo (varreduras repetem).
+     *  Devolve o id da exceção ABERTA, criada agora (`nova: true`) ou a que já existia: o alerta
+     *  por e-mail precisa do id para linkar o console em qualquer um dos dois casos. */
+    openOnce(e: { type: ExceptionType; refTable?: string; refId?: number; detail?: unknown }): Promise<{ id: number; nova: boolean }>;
     hasOpen(type: ExceptionType, refTable?: string, refId?: number): Promise<boolean>;
     countOpenByType(): Promise<Record<string, number>>;
     get(id: number): Promise<{ id: number; type: ExceptionType; status: "open" | "resolved" | "ignored"; refTable: string | null; refId: number | null; detail: unknown } | null>;
@@ -112,6 +114,16 @@ export interface Repo {
   watermarks: {
     get(key: string): Promise<{ writeDate: string; id: number } | null>;
     set(key: string, w: { writeDate: string; id: number }): Promise<void>;
+  };
+  alerts: {
+    /** Reserva a janela de silêncio numa statement atômica: devolve o id quando ESTE processo
+     *  ganhou o direito de avisar, e null quando alguém já avisou dentro da janela. É o dedupe
+     *  e a trava entre processos ao mesmo tempo. */
+    reservar(a: { alertKey: string; channel: string; recipients: string; janelaMinutos: number }): Promise<number | null>;
+    /** Fecha a linha reservada com o resultado do envio. */
+    registrar(id: number, r: { ok: boolean; error?: string | null }): Promise<void>;
+    /** Só para teste e para o console: o que foi mandado, mais recente primeiro. */
+    recentes(limit?: number): Promise<Array<{ id: number; alertKey: string; sentAt: Date; ok: boolean; error: string | null; recipients: string }>>;
   };
   audit: {
     log(e: {
@@ -129,12 +141,25 @@ export interface Clock {
 
 export type Logger = (msg: string, ctx?: Record<string, unknown>) => void;
 
+/** Canal de alerta. O adaptador de verdade fala com o Resend; o no-op só loga; o fake guarda.
+ *  Quem decide SE manda é o núcleo (janela de silêncio); aqui só se entrega. */
+export interface Notifier {
+  /** Nome do canal, gravado em `alerts_sent.channel` ("resend", "no-op", "fake"). */
+  readonly canal: string;
+  /** Para quem vai, já normalizado. Vazio = ninguém configurado. */
+  readonly destinatarios: readonly string[];
+  /** Entrega ou lança. Lançar não derruba job: quem chama grava ok=false e segue. */
+  entregar(a: { assunto: string; corpo: string; link: string | null }): Promise<void>;
+}
+
 export interface Deps {
   repo: Repo;
   odoo: OdooClient;
   asaas: AsaasClient;
   clock: Clock;
   log: Logger;
+  /** Ausente = ninguém é avisado (o motor funciona igual). */
+  notify?: Notifier;
 }
 
 /** Erro de borda que vale retry (5xx, timeout, rede, banco caindo). Adaptadores marcam; o núcleo só lê. */

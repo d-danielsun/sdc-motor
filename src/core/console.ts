@@ -41,6 +41,9 @@ export const CONFIG_KEYS = {
   IDA_ENABLED: false, TOLERANCE_BRL: "0.01", GO_LIVE_CUTOFF_DATE: null, JUROS_MULTA_AUTO: false, NOTIFICATIONS_ENABLED: false,
   ASAAS_WEBHOOK_ID: null, ASAAS_PENALIZED_LAST: 0, ASAAS_REACTIVATED_AT: null, ODOO_API_KEY_CREATED_AT: null,
   RECONCILE_LOOKBACK_DAYS: 3, SWEEP_FAILURES: {}, SYNC_LAST: null, RECONCILE_LAST: null, WATCHDOG_LAST: null,
+  // Endereço público do motor, usado para montar o link do console no e-mail de alerta. Vem do
+  // env no boot (CONSOLE_PUBLIC_URL) e mora aqui porque o núcleo não lê env.
+  CONSOLE_PUBLIC_URL: null,
 } as const satisfies Record<string, unknown>;
 export type ConfigKey = keyof typeof CONFIG_KEYS;
 /** Chaves que o console pode alterar (gates R1/R3 e defaults até Q3/Q6). */

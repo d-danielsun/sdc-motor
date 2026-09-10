@@ -1,8 +1,18 @@
 // Fila do Asaas interrompida, penalidades subindo, silêncio suspeito, key do Odoo perto de vencer.
+//
+// É AQUI que três dos quatro alertas críticos nascem, no mesmo tick que detecta a condição — o
+// watchdog roda a cada 15 min, então a detecção acontece em ≤15 min. Enviar não pode derrubar
+// o watchdog: `alertar` captura a falha e devolve o resultado.
 import { API_KEY_WARN_DAYS, STALE_HEARTBEAT_HOURS } from "../limits.js";
 import type { Deps } from "../ports.js";
+import { alertaChaveVencendo, alertaFilaInterrompida, alertaSilencio, alertar, type ResultadoAlerta } from "./notify.js";
 
-export interface WatchdogSummary { at: string; ok: boolean; interrupted: boolean; reactivated: boolean; penalizedDelta: number; staleHeartbeat: boolean; apiKeyDays: number | null }
+export interface WatchdogSummary {
+  at: string; ok: boolean; interrupted: boolean; reactivated: boolean; penalizedDelta: number;
+  staleHeartbeat: boolean; apiKeyDays: number | null;
+  /** O que aconteceu com cada alerta neste tick — vai pro log do job e pro console. */
+  alertas: Record<string, ResultadoAlerta>;
+}
 
 const HOUR = 3_600_000;
 export const apiKeyAgeDays = (createdAt: string, now: Date): number => Math.floor((now.getTime() - new Date(createdAt).getTime()) / (24 * HOUR));
@@ -16,20 +26,25 @@ export function isBusinessHoursBrt(now: Date): boolean {
 export async function watchdog(deps: Deps): Promise<WatchdogSummary> {
   const { repo, asaas, clock } = deps;
   const now = clock.now();
-  const s: WatchdogSummary = { at: now.toISOString(), ok: false, interrupted: false, reactivated: false, penalizedDelta: 0, staleHeartbeat: false, apiKeyDays: null };
+  const s: WatchdogSummary = { at: now.toISOString(), ok: false, interrupted: false, reactivated: false, penalizedDelta: 0, staleHeartbeat: false, apiKeyDays: null, alertas: {} };
+  const consoleUrl = await repo.config.get<string | null>("CONSOLE_PUBLIC_URL").catch(() => null);
 
   const webhookId = await repo.config.get<string | null>("ASAAS_WEBHOOK_ID");
   const wh = webhookId ? await asaas.getWebhook(webhookId) : null;
   if (wh) {
     if (wh.interrupted) {
       s.interrupted = true;
-      await repo.exceptions.openOnce({ type: "queue_interrupted", refTable: "asaas_webhooks", detail: { webhookId: wh.id, penalizedRequestsCount: wh.penalizedRequestsCount } });
+      const exc = await repo.exceptions.openOnce({ type: "queue_interrupted", refTable: "asaas_webhooks", detail: { webhookId: wh.id, penalizedRequestsCount: wh.penalizedRequestsCount } });
       const last = await repo.config.get<string | null>("ASAAS_REACTIVATED_AT");
       if (!last || now.getTime() - new Date(last).getTime() >= HOUR) {
         await asaas.updateWebhook(wh.id, { interrupted: false });
         await repo.config.set("ASAAS_REACTIVATED_AT", now.toISOString());
         s.reactivated = true;
       }
+      // Alerta DEPOIS da tentativa de reativação, para o e-mail já dizer o que o motor fez.
+      s.alertas.queue_interrupted = await alertar(deps, alertaFilaInterrompida({
+        webhookId: wh.id, penalizedRequestsCount: wh.penalizedRequestsCount, reativado: s.reactivated, excecaoId: exc.id,
+      }), { consoleUrl });
     }
     const lastPenalized = (await repo.config.get<number>("ASAAS_PENALIZED_LAST")) ?? 0;
     s.penalizedDelta = wh.penalizedRequestsCount - lastPenalized;
@@ -41,14 +56,20 @@ export async function watchdog(deps: Deps): Promise<WatchdogSummary> {
     const last = await repo.asaasEvents.lastReceivedAt();
     if (!last || now.getTime() - last.getTime() > STALE_HEARTBEAT_HOURS * HOUR) {
       s.staleHeartbeat = true;
-      await repo.exceptions.openOnce({ type: "stale_heartbeat", refTable: "webhook_events", detail: { lastReceivedAt: last?.toISOString() ?? null } });
+      const exc = await repo.exceptions.openOnce({ type: "stale_heartbeat", refTable: "webhook_events", detail: { lastReceivedAt: last?.toISOString() ?? null } });
+      s.alertas.stale_heartbeat = await alertar(deps, alertaSilencio({
+        horas: STALE_HEARTBEAT_HOURS, ultimoEventoEm: last?.toISOString() ?? null, cobrancasAbertas: await repo.charges.countOpen(), excecaoId: exc.id,
+      }), { consoleUrl });
     }
   }
 
   const keyCreated = await repo.config.get<string | null>("ODOO_API_KEY_CREATED_AT");
   if (keyCreated) {
     s.apiKeyDays = apiKeyAgeDays(keyCreated, now);
-    if (s.apiKeyDays >= API_KEY_WARN_DAYS) await repo.exceptions.openOnce({ type: "api_key_expiring", refTable: "app_config", detail: { createdAt: keyCreated, ageDays: s.apiKeyDays } });
+    if (s.apiKeyDays >= API_KEY_WARN_DAYS) {
+      const exc = await repo.exceptions.openOnce({ type: "api_key_expiring", refTable: "app_config", detail: { createdAt: keyCreated, ageDays: s.apiKeyDays } });
+      s.alertas.api_key_expiring = await alertar(deps, alertaChaveVencendo({ ageDays: s.apiKeyDays, excecaoId: exc.id }), { consoleUrl });
+    }
   }
   s.ok = true;
   await repo.config.set("WATCHDOG_LAST", s);

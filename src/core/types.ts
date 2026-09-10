@@ -9,6 +9,19 @@ export type ExceptionType =
   | "reversal_pending" | "queue_interrupted" | "stale_heartbeat" | "api_key_expiring"
   | "writeoff_needed" | "webhook_penalized" | "integration_error";
 export type DiffPolicy = "juros_multa" | "in_cash" | "writeoff_financeiro" | "exception" | "ja_baixada_no_odoo";
+/** Alerta crítico: o que o motor manda por e-mail no momento em que a coisa acontece.
+ *  `chave` é o que o dedupe usa ("<tipo>:<ref>") e `excecaoId` monta o link para o console. */
+export interface Alert {
+  tipo: ExceptionType;
+  chave: string;
+  assunto: string;
+  /** O que aconteceu, o que o motor já tentou, o que a pessoa deve fazer. Texto puro. */
+  corpo: string;
+  /** Janela de silêncio em minutos: dentro dela, um alerta com a mesma chave não sai. */
+  silencioMinutos: number;
+  excecaoId?: number | null;
+}
+
 export type AuditDirection = "odoo_out" | "asaas_out" | "asaas_in" | "odoo_in" | "console";
 
 // ── Odoo (o que o motor precisa saber de uma fatura) ─────────────────────────

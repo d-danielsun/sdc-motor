@@ -172,13 +172,26 @@ const TELAS = {
 
 async function rotear() {
   if (!usuario) return;
-  const nome = (location.hash.replace(/^#\//, "").split("?")[0]) || "excecoes";
+  // `#/excecoes/42` e `#/cobrancas/7` abrem a tela E o detalhe: é para onde o e-mail de alerta
+  // manda a pessoa às 3h da manhã. Cair na lista e ter que procurar não serve.
+  const partes = location.hash.replace(/^#\//, "").split("?")[0].split("/").filter(Boolean);
+  const nome = partes[0] || "excecoes";
+  const alvo = partes[1];
   const rota = TELAS[nome] ? nome : "excecoes";
   for (const [k, t] of Object.entries(TELAS)) $(t.secao).hidden = k !== rota;
   for (const a of document.querySelectorAll("header nav a")) {
     if (a.dataset.rota === rota) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
   }
-  try { await TELAS[rota].carregar(); } catch (e) { if (e.status !== 401) aviso(e.message, true); }
+  try {
+    await TELAS[rota].carregar();
+    if (alvo && /^\d+$/.test(alvo)) {
+      if (rota === "excecoes") await abrirExcecao(Number(alvo));
+      else if (rota === "cobrancas") await abrirCobranca(Number(alvo));
+    }
+  } catch (e) {
+    if (e.status === 404) aviso(`Não achei o item ${alvo ?? ""} — ele pode ter sido removido.`, true);
+    else if (e.status !== 401) aviso(e.message, true);
+  }
 }
 
 // ── exceções ──────────────────────────────────────────────────────────────
@@ -475,7 +488,13 @@ async function ligarNotificacoes(ev) {
 }
 
 // ── painéis ───────────────────────────────────────────────────────────────
-const fecharPainel = () => { $("painel").hidden = true; };
+function fecharPainel() {
+  $("painel").hidden = true;
+  // Se chegamos por link profundo (#/excecoes/42), fechar tem que limpar o id do hash, senão
+  // um F5 reabre o painel e o botão voltar não faz nada.
+  const partes = location.hash.replace(/^#\//, "").split("/").filter(Boolean);
+  if (partes.length > 1) history.replaceState(null, "", `#/${partes[0]}`);
+}
 
 function confirmar(titulo, texto, rotuloBotao) {
   return new Promise((resolve) => {
