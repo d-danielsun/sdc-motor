@@ -83,7 +83,7 @@ describe("U3 — banco sem migração", () => {
 describe("U6 — a fonte de verdade é a parcela no Odoo", () => {
   it("parcela já conciliada (retry após crash) → fecha do nosso lado sem 2º pagamento", async () => {
     const { w, p1 } = await idaPronta();
-    await w.deps.odoo.registerPayment({ moveLineId: 1001, amount: "100.00", paymentDate: "2026-09-10" });   // registrou, mas o motor caiu antes de gravar
+    await w.deps.odoo.registerPayment({ moveLineId: 1001, amount: "100.00", paymentDate: "2026-09-10", ref: `asaas:${p1.id}` });   // registrou, mas o motor caiu antes de gravar
     await w.deps.repo.asaasEvents.insert({ asaasEventId: "e1", eventType: "PAYMENT_RECEIVED", asaasPaymentId: p1.id, payload: w.asaas.confirm(p1.id) });
     expect(await processAsaasEvents(w.deps)).toMatchObject({ done: 1 });
     expect(w.odoo.payments).toHaveLength(1);

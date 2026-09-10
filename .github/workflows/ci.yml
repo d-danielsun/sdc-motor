@@ -1,0 +1,116 @@
+name: ci
+
+# POR QUE ISTO EXISTE. Este motor emite boleto e registra baixa no ERP: um PR que quebra a
+# volta do dinheiro não pode entrar sem ninguém ver. Antes disto os 97 testes rodavam só
+# quando alguém lembrava. Fecha o AC10 da spec do produto (02-SPEC.md).
+#
+# Sem `paths:` de propósito: no salvei/site uma suíte ficou 10h sem afirmar nada porque um
+# filtro de path escondeu a quebra (issue #154 de lá). Filtro de path é como uma suíte
+# morre calada — aqui qualquer arquivo alterado roda a suíte inteira.
+#
+# Os ids dos jobs (test, build, sandbox) são o `context` dos required status checks em
+# scripts/branch-protection.sh. Renomear job aqui = atualizar o script lá.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: motor
+          POSTGRES_PASSWORD: motor
+          POSTGRES_DB: motor
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U motor -d motor"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://motor:motor@localhost:5432/motor
+      DATABASE_URL_TEST: postgres://motor:motor@localhost:5432/motor_test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020   # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+
+      - name: typecheck
+        run: npm run typecheck
+
+      # O service do Actions não roda db/init/ (isso é do docker compose), então o banco
+      # de teste é criado aqui. `create database` não aceita `if not exists`, e `psql -c`
+      # não aceita SQL e meta-comando (\gexec) na mesma string — daí o teste antes,
+      # que também deixa o step idempotente em re-run.
+      - name: criar o banco de teste
+        run: |
+          if psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -tAc "select 1 from pg_database where datname='motor_test'" | grep -q 1; then
+            echo "motor_test já existe"
+          else
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'create database motor_test'
+          fi
+
+      - name: migrations (dev e teste)
+        run: npm run db:migrate && npm run db:migrate:test
+
+      - name: testes (unit + Postgres real)
+        run: npm test
+
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+      # Prova que a imagem compila: o Dockerfile roda `npm run build` no estágio de build,
+      # então um erro de tipo que só apareça na emissão de JS é pego aqui.
+      - name: build da imagem
+        run: docker build -t sdc-motor:ci .
+
+  # Toca o sandbox real do Asaas (rede + conta de terceiro): nunca em PR, só quando alguém
+  # pede. Sem o secret configurado o job avisa e passa — não falha, porque a suíte do
+  # sandbox é complementar, não o gate.
+  sandbox:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020   # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: o secret existe?
+        id: check
+        env:
+          KEY: ${{ secrets.ASAAS_SANDBOX_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::warning title=Sandbox pulado::ASAAS_SANDBOX_KEY não está configurado no repo. Cadastre com a chave do 1Password (\"Sandbox API Key AsaaS - SDC\") para exercitar o Asaas de verdade."
+            echo "has_key=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_key=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: suíte viva do sandbox
+        if: steps.check.outputs.has_key == 'true'
+        env:
+          ASAAS_API_KEY: ${{ secrets.ASAAS_SANDBOX_KEY }}
+          ASAAS_URL: https://api-sandbox.asaas.com/v3
+        run: npm run test:sandbox
