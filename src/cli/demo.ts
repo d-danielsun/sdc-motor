@@ -19,6 +19,7 @@ import { applyMigrations } from "../adapters/db/migrations.js";
 import { createPgRepo } from "../adapters/db/repo.js";
 import { FakeAsaas } from "../adapters/fakes/fakeAsaas.js";
 import { FakeOdoo } from "../adapters/fakes/fakeOdoo.js";
+import { OPEN_STATUSES } from "../core/charges.js";
 import { CONFIG_KEYS } from "../core/console.js";
 import type { Deps } from "../core/ports.js";
 import { handleInvoice } from "../core/usecases/handleInvoice.js";
@@ -42,7 +43,7 @@ export const DOCS = {
   transportes: "22333444000181",
   serralheria: "33444555000181",
   mercado: "44555666000181",
-  autonomo: "11144477735",
+  autonomo: "11144477735",   // CPF — a marcenaria do cenário `vencidas` é pessoa física
 } as const;
 
 export interface DemoCtx {
@@ -66,15 +67,34 @@ export interface Resumo {
 
 // ── guardas ──────────────────────────────────────────────────────────────────
 
+/** Tabelas que o reset NÃO apaga. `schema_migrations` é óbvio; a lista existe para o dia em
+ *  que uma migration semear dado de referência — apagá-lo seria permanente, porque a
+ *  migration não roda de novo. Migration que semeia dado entra aqui no mesmo PR. */
+export const NAO_TRUNCAR: readonly string[] = ["schema_migrations"];
+
+/** Esquemas aceitos. Fora disso a guarda de nome não vale: o `pg` aceita `socket:/dir?db=x`,
+ *  onde o nome do banco vem da QUERY e o pathname é o diretório do socket — uma URL
+ *  `socket:/tmp_demo?db=motor` passaria por uma checagem de sufixo no pathname e conectaria
+ *  no banco de desenvolvimento. Achado do verificador da #12; a saída é recusar o esquema. */
+const ESQUEMAS = ["postgres:", "postgresql:"];
+
 /** O nome do banco tem que terminar em `_demo`. O demo TRUNCA tudo: apontar para `motor`
- *  (dev) ou `motor_test` apagaria trabalho ou a suíte. Falha fechado, com a URL redigida. */
+ *  (dev) ou `motor_test` apagaria trabalho ou a suíte. Falha fechado.
+ *
+ *  Esta é a primeira de DUAS guardas. Ela lê a URL, e ler URL é onde mora o erro — então
+ *  `assertBancoDescartavel` pergunta ao próprio servidor, já conectado, em que banco a
+ *  conexão está. Nenhum truncate acontece sem essa segunda confirmação. */
 export function assertDemoUrl(url: string): void {
-  let nome: string;
+  let u: URL;
   try {
-    nome = decodeURIComponent(new URL(url).pathname.replace(/^\//, ""));
+    u = new URL(url);
   } catch {
     throw new Error("DATABASE_URL não é uma URL válida");
   }
+  if (!ESQUEMAS.includes(u.protocol)) {
+    throw new Error(`DATABASE_URL tem esquema "${u.protocol}" — o demo só aceita ${ESQUEMAS.join(" ou ")}, porque em outros o nome do banco não está no caminho da URL`);
+  }
+  const nome = decodeURIComponent(u.pathname.replace(/^\//, ""));
   if (!nome.endsWith("_demo")) {
     throw new Error(
       `o demo só roda em banco terminado em "_demo", e a DATABASE_URL aponta para "${nome || "(sem banco)"}".\n` +
@@ -82,15 +102,35 @@ export function assertDemoUrl(url: string): void {
         `Use: DATABASE_URL=postgres://motor:motor@localhost:55432/motor_demo npm run demo -- tudo`,
     );
   }
+  if (!/^[A-Za-z0-9_$-]+$/.test(nome)) throw new Error(`nome de banco com caractere inesperado: ${JSON.stringify(nome)}`);
+}
+
+/** A guarda que conta: pergunta ao servidor em que banco esta conexão está. Imune a qualquer
+ *  discordância entre `new URL()` e o parser do `pg`, que foi exatamente o furo encontrado. */
+export async function assertBancoDescartavel(pool: ReturnType<typeof createPool>, sufixos: readonly string[] = ["_demo"]): Promise<string> {
+  const atual = String((await pool.query("select current_database() as db")).rows[0]?.db ?? "");
+  if (!sufixos.some((sufixo) => atual.endsWith(sufixo))) {
+    throw new Error(`recusando truncar: a conexão está no banco "${atual}", que não termina em ${sufixos.join(" nem ")}`);
+  }
+  return atual;
 }
 
 /** Zera o banco e recoloca o app_config no default do registro, com a ida ligada e a data de
  *  corte no passado (sem ela o motor não emite nada — é fail closed de propósito). */
-export async function resetDemoDb(pool: ReturnType<typeof createPool>, hoje: string): Promise<void> {
+export async function resetDemoDb(pool: ReturnType<typeof createPool>, hoje: string, o: { sufixos?: readonly string[] } = {}): Promise<void> {
+  // Segunda guarda, e a que vale: esta função é exportada, então quem a chamar sem passar
+  // pelo CLI também não consegue truncar o banco errado.
+  await assertBancoDescartavel(pool, o.sufixos ?? ["_demo"]);
   const { rows } = await pool.query<{ tablename: string }>(
-    "select tablename from pg_tables where schemaname = 'public' and tablename <> 'schema_migrations'",
+    `select tablename from pg_tables
+       where schemaname = 'public' and tablename <> all($1::text[])
+         and tablename not in (select c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace
+                                where n.nspname = 'public' and c.relispartition)`,
+    [NAO_TRUNCAR],
   );
-  // Descoberto do catálogo em vez de lista fixa: migration nova entra no reset sozinha.
+  // Descoberto do catálogo para que migration nova entre no reset sozinha, com duas
+  // exceções: o controle de migração e o que a lista abaixo protege. Partição-filha sai
+  // porque truncar o pai já a esvazia.
   if (rows.length > 0) {
     const alvo = rows.map((r) => `"${r.tablename}"`).join(", ");
     await pool.query(`truncate ${alvo} restart identity cascade`);
@@ -132,7 +172,7 @@ async function pagamentoDa(ctx: DemoCtx, moveLineId: number): Promise<string> {
 }
 
 export async function cicloFeliz(ctx: DemoCtx): Promise<void> {
-  ctx.odoo.addPartner({ id: 10, name: "Padaria do Bairro Ltda", vat: DOCS.padaria, email: "financeiro@padariadobairro.com.br" });
+  ctx.odoo.addPartner({ id: 10, name: "Padaria do Bairro Ltda", vat: DOCS.padaria, email: "financeiro@exemplo.com.br" });
   ctx.odoo.addInvoice({
     id: 100, name: "INV/2026/0001", partnerId: 10, invoiceDate: ctx.dia(-10),
     lines: [
@@ -147,13 +187,13 @@ export async function cicloFeliz(ctx: DemoCtx): Promise<void> {
 
 export async function semCpf(ctx: DemoCtx): Promise<void> {
   // vat null é o caso real mais comum: cadastro do Odoo incompleto. Nenhum boleto sai.
-  ctx.odoo.addPartner({ id: 20, name: "Transportes Aurora ME", vat: null, email: "contato@transportesaurora.com.br" });
+  ctx.odoo.addPartner({ id: 20, name: "Transportes Aurora ME", vat: null, email: "contato@exemplo.com.br" });   // DOCS.transportes existe, mas o cenário é justamente o cadastro sem documento
   ctx.odoo.addInvoice({ id: 200, name: "INV/2026/0002", partnerId: 20, invoiceDate: ctx.dia(-8), lines: [{ id: 2001, dateMaturity: ctx.dia(7), amount: "890.00" }] });
   await emitir(ctx, 200);
 }
 
 export async function divergente(ctx: DemoCtx): Promise<void> {
-  ctx.odoo.addPartner({ id: 30, name: "Serralheria Ipê Ltda", vat: DOCS.serralheria, email: "ipe@serralheriaipe.com.br" });
+  ctx.odoo.addPartner({ id: 30, name: "Serralheria Ipê Ltda", vat: DOCS.serralheria, email: "ipe@exemplo.com.br" });
   ctx.odoo.addInvoice({ id: 300, name: "INV/2026/0003", partnerId: 30, invoiceDate: ctx.dia(-6), lines: [{ id: 3001, dateMaturity: ctx.dia(3), amount: "100.00" }] });
   await emitir(ctx, 300);
   // Pagou R$ 90 numa cobrança de R$ 100: falta dinheiro, e o motor NÃO baixa por conta própria.
@@ -161,7 +201,7 @@ export async function divergente(ctx: DemoCtx): Promise<void> {
 }
 
 export async function juros(ctx: DemoCtx): Promise<void> {
-  ctx.odoo.addPartner({ id: 40, name: "Mercado São Jorge Ltda", vat: DOCS.mercado, email: "contas@mercadosaojorge.com.br" });
+  ctx.odoo.addPartner({ id: 40, name: "Mercado São Jorge Ltda", vat: DOCS.mercado, email: "contas@exemplo.com.br" });
   ctx.odoo.addInvoice({ id: 400, name: "INV/2026/0004", partnerId: 40, invoiceDate: ctx.dia(-20), lines: [{ id: 4001, dateMaturity: ctx.dia(-4), amount: "100.00" }] });
   await emitir(ctx, 400);
   // Pagou depois do vencimento: R$ 103,10, sendo R$ 3,10 de juros e multa do próprio Asaas.
@@ -186,7 +226,8 @@ export async function filaParada(ctx: DemoCtx): Promise<void> {
 
 /** 3 cobranças vencidas, uma em cada faixa de atraso, para o aging mostrar as 4 colunas. */
 export async function vencidas(ctx: DemoCtx): Promise<void> {
-  ctx.odoo.addPartner({ id: 50, name: "Oficina Duas Rodas Ltda", vat: DOCS.transportes, email: "oficina@duasrodas.com.br" });
+  // Pessoa física de propósito: é o único cenário com CPF em vez de CNPJ.
+  ctx.odoo.addPartner({ id: 50, name: "Joana Ribeiro Marcenaria", vat: DOCS.autonomo, email: "joana@exemplo.com.br" });
   ctx.odoo.addInvoice({
     id: 500, name: "INV/2026/0005", partnerId: 50, invoiceDate: ctx.dia(-60),
     lines: [
@@ -229,8 +270,15 @@ export async function garantirBanco(url: string): Promise<{ criado: boolean; mig
     try {
       // Identificador não aceita parâmetro; o nome já foi validado por assertDemoUrl e só
       // pode conter o que o próprio Postgres aceita entre aspas duplas.
-      await admin.query(`create database "${nome.replace(/"/g, '""')}"`);
-      criado = true;
+      try {
+        await admin.query(`create database "${nome.replace(/"/g, '""')}"`);
+        criado = true;
+      } catch (err) {
+        // 42P04 = duplicate_database, 23505 = unique_violation no catálogo: outra execução
+        // criou primeiro. Corrida benigna, e não motivo para falhar.
+        const cod = (err as { code?: string }).code;
+        if (cod !== "42P04" && cod !== "23505") throw err;
+      }
     } finally {
       await admin.end();
     }
@@ -267,15 +315,15 @@ export async function semear(ctx: DemoCtx, cenario: Cenario): Promise<void> {
 export async function resumir(pool: ReturnType<typeof createPool>, cenario: Cenario, hoje: string): Promise<Resumo> {
   const um = async (sql: string, p: unknown[] = []) => Number((await pool.query(sql, p)).rows[0]?.n ?? 0);
   const cobrancas = await um("select count(*)::int as n from charges");
-  const cobrancasAbertas = await um("select count(*)::int as n from charges where status in ('created','confirmed')");
+  const cobrancasAbertas = await um("select count(*)::int as n from charges where status = any($1::text[])", [[...OPEN_STATUSES]]);
   const conciliacoes = await um("select count(*)::int as n from reconciliations");
   const exc = (await pool.query<{ type: string; n: number }>("select type, count(*)::int as n from exceptions where status='open' group by type order by type")).rows;
   const aging = (
     await pool.query<{ bucket: string; count: number; amount: string }>(
       `select case when due_date >= $1::date then 'a_vencer' when $1::date - due_date <= 7 then '1_7' when $1::date - due_date <= 30 then '8_30' else '31_mais' end as bucket,
               count(*)::int as count, coalesce(sum(amount),0)::text as amount
-         from charges where status in ('created','confirmed') group by 1`,
-      [hoje],
+         from charges where status = any($2::text[]) group by 1`,
+      [hoje, [...OPEN_STATUSES]],
     )
   ).rows;
   const ordem = ["a_vencer", "1_7", "8_30", "31_mais"];
@@ -289,19 +337,26 @@ export async function resumir(pool: ReturnType<typeof createPool>, cenario: Cena
   };
 }
 
-/** Credenciais para abrir o console. Enquanto a filha do console (#13) não existir, o acesso
- *  é o CONSOLE_TOKEN do ambiente — não há tabela de usuário para criar um usuário de demo. */
+/** Como abrir o console no banco semeado. Enquanto a filha do console (#13) não existir, não
+ *  há tabela de usuário: o acesso é o CONSOLE_TOKEN, e é ele que sai impresso.
+ *
+ *  Sim, isto imprime um segredo no terminal — de propósito, e é o que a issue pede. É o token
+ *  da máquina de quem está demonstrando, e sem ele a instrução não serve para nada. Não rode
+ *  o demo com a tela compartilhada usando o token de produção. */
 export async function credenciais(pool: ReturnType<typeof createPool>, env: NodeJS.ProcessEnv): Promise<{ modo: "console_users" | "token"; linhas: string[] }> {
   const existe = (await pool.query("select to_regclass('public.console_users') as t")).rows[0]?.t !== null;
   const porta = env.PORT ?? "8787";
-  const url = `http://localhost:${porta}/`;
+  // A raiz não é servida por ninguém: as rotas do motor são /health, os dois webhooks e
+  // /api/v1. A UI em /console chega com a #13.
+  const url = `http://localhost:${porta}/api/v1/dashboard`;
   if (existe) {
     return {
       modo: "console_users",
       linhas: [
         `console:  ${url}`,
-        "usuário:  a tabela console_users existe neste banco, mas criar o usuário de demonstração",
-        "          é da filha que a introduziu (#13). Crie por lá e volte a rodar o demo.",
+        "usuário:  a tabela console_users existe neste banco. Crie o usuário de demonstração com",
+        '          npm run job -- console-user --email demo@exemplo.com.br --name "Demonstração"',
+        "          (a senha é gerada e impressa uma vez) e entre pela tela de login.",
       ],
     };
   }
@@ -310,10 +365,15 @@ export async function credenciais(pool: ReturnType<typeof createPool>, env: Node
     modo: "token",
     linhas: [
       `console:  ${url}`,
-      token
-        ? `acesso:   Authorization: Bearer ${"*".repeat(8)}… (o CONSOLE_TOKEN que já está no seu ambiente)`
-        : "acesso:   defina CONSOLE_TOKEN (≥32 caracteres) antes de subir o motor — sem ele a API responde 503",
-      "usuário:  login próprio chega com a filha #13; até lá o console é autenticado pelo token",
+      ...(token
+        ? [
+            "acesso:   ainda não há login próprio (chega na #13); a API é autenticada pelo token.",
+            `          curl -s -H 'authorization: Bearer ${token}' ${url}`,
+          ]
+        : [
+            "acesso:   defina CONSOLE_TOKEN (≥32 caracteres) antes de subir o motor — sem ele a",
+            "          API do console responde 503. Ex.: export CONSOLE_TOKEN=$(openssl rand -hex 24)",
+          ]),
     ],
   };
 }
@@ -338,7 +398,8 @@ export async function main(argv: string[] = process.argv.slice(2), env: NodeJS.P
   try {
     preparo = await garantirBanco(url);
   } catch (e) {
-    console.error(`não consegui preparar o banco de demonstração: ${String((e as Error).message)}`);
+    // AggregateError de ECONNREFUSED no Node 24 vem sem `message`: cair para String(e).
+    console.error(`não consegui preparar o banco de demonstração: ${(e as Error).message || String(e)}`);
     console.error("o Postgres está de pé? `npm run db:up`");
     return 1;
   }
@@ -368,7 +429,7 @@ export async function main(argv: string[] = process.argv.slice(2), env: NodeJS.P
     console.log(`\npara subir o motor neste banco:\n  DATABASE_URL=${url} npm start\n`);
     return 0;
   } catch (e) {
-    console.error(`demo falhou: ${String((e as Error).message)}`);
+    console.error(`demo falhou: ${(e as Error).message || String(e)}`);
     return 1;
   } finally {
     await pool.end().catch(() => undefined);

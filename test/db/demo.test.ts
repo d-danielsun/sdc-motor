@@ -5,12 +5,16 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { todayBrt } from "../../src/adapters/clock.js";
 import { createPool } from "../../src/adapters/db/pool.js";
 import {
-  CENARIOS, assertDemoUrl, cicloFeliz, criarCtx, demoDeps, deslocar, divergente, filaParada,
-  juros, resetDemoDb, resumir, semCpf, semear, vencidas, type DemoCtx,
+  CENARIOS, assertBancoDescartavel, assertDemoUrl, cicloFeliz, credenciais, criarCtx, demoDeps,
+  deslocar, divergente, filaParada, juros, resetDemoDb, resumir, semCpf, semear, vencidas,
+  type DemoCtx,
 } from "../../src/cli/demo.js";
 import { DB_URL, dbReachable } from "../helpers.js";
 
 const hoje = todayBrt(new Date());   // o mesmo dia civil que o CLI usa
+// A suíte roda no `motor_test`, que é descartável mas não termina em `_demo`: o teste declara
+// isso explicitamente, e é a própria prova de que a guarda está no caminho.
+const DESCARTAVEL = { sufixos: ["_test", "_demo"] } as const;
 let pool: ReturnType<typeof createPool>;
 
 beforeAll(async () => {
@@ -21,7 +25,7 @@ afterAll(async () => { await pool?.end(); });
 
 /** Um contexto de demo limpo, apontado para o banco de TESTE (o CLI aponta para o `_demo`). */
 async function ctxLimpo(): Promise<DemoCtx> {
-  await resetDemoDb(pool, hoje);
+  await resetDemoDb(pool, hoje, DESCARTAVEL);
   const { deps } = demoDeps(pool, hoje);
   return criarCtx(deps, hoje);
 }
@@ -129,7 +133,7 @@ describe("cenários (AC5)", () => {
 });
 
 describe("cenário 'tudo' (AC1)", () => {
-  beforeEach(async () => { await resetDemoDb(pool, hoje); });
+  beforeEach(async () => { await resetDemoDb(pool, hoje, DESCARTAVEL); });
 
   it("deixa ≥6 cobranças, uma exceção de cada tipo e as 4 faixas de aging preenchidas", async () => {
     const { deps } = demoDeps(pool, hoje);
@@ -152,7 +156,7 @@ describe("cenário 'tudo' (AC1)", () => {
 
   it("é idempotente por reset: rodar duas vezes dá a mesma estrutura (AC2)", async () => {
     const rodar = async () => {
-      await resetDemoDb(pool, hoje);
+      await resetDemoDb(pool, hoje, DESCARTAVEL);
       const { deps } = demoDeps(pool, hoje);
       await semear(criarCtx(deps, hoje), "tudo");
       // A comparação é sobre estrutura e deslocamento em dias, não sobre timestamps: as
@@ -187,9 +191,52 @@ describe("cenário 'tudo' (AC1)", () => {
 
   it("todo cenário do catálogo tem passo e descrição", async () => {
     for (const c of CENARIOS) {
-      await resetDemoDb(pool, hoje);
+      await resetDemoDb(pool, hoje, DESCARTAVEL);
       const { deps } = demoDeps(pool, hoje);
       await expect(semear(criarCtx(deps, hoje), c), `cenário ${c} estourou`).resolves.toBeUndefined();
     }
+  });
+});
+
+describe("guarda que pergunta ao servidor (P1 do verificador)", () => {
+  it("recusa esquema em que o nome do banco não está no caminho da URL", () => {
+    // `socket:/tmp_demo?db=motor` passava por uma checagem de sufixo no pathname e o `pg`
+    // conectava no banco de desenvolvimento. É o furo que o verificador achou.
+    expect(() => assertDemoUrl("socket:/tmp_demo?db=motor")).toThrow(/esquema/);
+    expect(() => assertDemoUrl("socket:/var/run/postgresql_demo?db=motor_test")).toThrow(/esquema/);
+  });
+  it("recusa nome de banco com caractere inesperado", () => {
+    expect(() => assertDemoUrl('postgres://h/a"b_demo')).toThrow(/caractere inesperado/);
+  });
+  it("pergunta ao servidor em que banco está, e recusa o que não é descartável", async () => {
+    await expect(assertBancoDescartavel(pool, ["_test"])).resolves.toMatch(/_test$/);
+    await expect(assertBancoDescartavel(pool, ["_demo"])).rejects.toThrow(/recusando truncar/);
+    // e é essa guarda que protege o reset, não só a leitura da URL
+    await expect(resetDemoDb(pool, hoje)).rejects.toThrow(/recusando truncar/);
+  });
+});
+
+describe("saída do comando (AC6)", () => {
+  it("sem console_users: imprime a URL que existe e o token a usar", async () => {
+    await resetDemoDb(pool, hoje, DESCARTAVEL);
+    const c = await credenciais(pool, { CONSOLE_TOKEN: "t".repeat(40), PORT: "9999" });
+    expect(c.modo).toBe("token");
+    const texto = c.linhas.join("\n");
+    expect(texto).toContain("http://localhost:9999/api/v1/dashboard");
+    expect(texto).toContain("t".repeat(40));   // o token de fato, não mascarado
+  });
+  it("sem token: diz como gerar um em vez de imprimir vazio", async () => {
+    const c = await credenciais(pool, {});
+    expect(c.linhas.join("\n")).toMatch(/CONSOLE_TOKEN/);
+    expect(c.linhas.join("\n")).toMatch(/openssl rand/);
+  });
+});
+
+describe("tabelas protegidas do reset (P2 do verificador)", () => {
+  it("não apaga tabela da lista NAO_TRUNCAR", async () => {
+    await resetDemoDb(pool, hoje, DESCARTAVEL);
+    // schema_migrations é o caso real: apagá-la faria a migration não re-rodar nunca
+    const n = Number((await pool.query("select count(*)::int as n from schema_migrations")).rows[0].n);
+    expect(n).toBeGreaterThan(0);
   });
 });

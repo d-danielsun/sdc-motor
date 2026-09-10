@@ -48,6 +48,6 @@ describe("AsaasHttpClient", () => {
     const c = client([(_u, b) => { sent = b; return res(200, JSON.stringify(pay("pay_n", { value: 123.45 }))); }]);
     expect((await c.createPayment({ customer: "cus_1", value: "123.45", dueDate: "2026-10-01", externalReference: "odoo:move_line:9", description: "x" })).value).toBe("123.45");
     expect(sent).toMatchObject({ billingType: "BOLETO", value: 123.45, customer: "cus_1" });
-    await expect(client([() => res(200, JSON.stringify({ name: "x" }))]).createCustomer({ name: "x", cpfCnpj: "52998224725", externalReference: "odoo:partner:1", notificationDisabled: true })).rejects.toThrow(/sem id válido/);
+    await expect(client([() => res(200, JSON.stringify({ name: "x" }))]).createCustomer({ name: "x", cpfCnpj: "11144477735", externalReference: "odoo:partner:1", notificationDisabled: true })).rejects.toThrow(/sem id válido/);
   });
 });
