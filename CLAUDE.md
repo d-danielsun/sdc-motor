@@ -3,14 +3,15 @@
 Motor de cobrança Odoo ↔ Asaas da SDC (deal Salvei, R$ 8k/mês). Fatura postada no Odoo → boleto no Asaas → `PAYMENT_RECEIVED` → baixa na parcela exata do Odoo, com console de exceções. Stack: Node 24 + TypeScript, Hono, `pg`, Postgres. **Invariante: o núcleo (`src/core`) não importa nada de Supabase, Deno ou HTTP — roda igual em Supabase hoje e em container/GCP/AWS/servidor físico amanhã.**
 
 ## Como rodar
-- `npm run db:up && npm run db:migrate && npm run db:migrate:test` — Postgres local (porta 55432): banco `motor` (dev) + `motor_test` (testes). Volume antigo sem `motor_test`? `npm run db:reset`.
+- `npm run db:up && npm run db:migrate && npm run db:migrate:test` — Postgres local (porta 55432): banco `motor` (dev) + `motor_test` (testes) + `motor_demo` (demonstração). Volume antigo sem `motor_test`? `npm run db:reset`.
+- `npm run demo -- tudo` — semeia o `motor_demo` com os cenários de demonstração (cria e migra o banco sozinho; recusa banco que não termine em `_demo`). Cenários e o porquê: seção "Modo demo" do README.
 - `npm run test:unit` — puro. `npm test` — unit + fluxo contra Postgres real (`motor_test`). `scripts/with-op.sh npm run test:sandbox` — vivo contra o sandbox do Asaas (key vem do 1Password, nunca de arquivo).
 - `npm run dev` — API local (`/health`, `/webhook-asaas`, `/webhook-odoo?k=`). `npm run job -- <nome>` — roda um job (sync-invoices, reconcile-daily, watchdog…).
 
 ## Estrutura
 - `src/core/` — tipos, máquina de estados de `charges`, casos de uso, **portas** (`OdooClient`, `AsaasClient`, `Repo`, `Clock`). Puro.
 - `src/adapters/` — `asaas/` (fetch), `odoo/` (JSON-2 `/json/2`), `db/` (pg), `fakes/` (Odoo e Asaas em memória pra testes).
-- `src/app/` — Hono (webhooks em `server.ts`, console em `console.ts`) + scheduler. `src/cli/` — migrate, job. `db/migrations/` — SQL puro, ordem numérica.
+- `src/app/` — Hono (webhooks em `server.ts`, console em `console.ts`) + scheduler. `src/cli/` — migrate, job, demo. `db/migrations/` — SQL puro, ordem numérica.
 - Read model do console: `src/core/console.ts` (interface) + `src/adapters/db/console.ts` (SQL). Ações: `src/core/usecases/console.ts`.
 - Spec-fonte: `~/w/salvei/propostas/SDC/02-SPEC.md` (v1.1). Contratos Odoo/Asaas estão lá, não aqui.
 
