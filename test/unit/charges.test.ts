@@ -35,8 +35,8 @@ describe("utilitários", () => {
     expect(isBusinessHoursBrt(new Date("2026-09-12T15:00:00Z"))).toBe(false);  // sáb
   });
   it("documento: só CPF/CNPJ com tamanho certo", () => {
-    expect(normalizeDocument("529.982.247-25")).toBe("52998224725");
-    expect(normalizeDocument("19.950.162/0001-19")).toBe("19950162000119");
+    expect(normalizeDocument("111.444.777-35")).toBe("11144477735");
+    expect(normalizeDocument("11.222.333/0001-81")).toBe("11222333000181");
     expect(normalizeDocument("123")).toBeNull();
     expect(normalizeDocument(null)).toBeNull();
   });

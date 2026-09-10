@@ -14,8 +14,10 @@ import type { Deps } from "../src/core/ports.js";
 export const DB_URL = process.env.DATABASE_URL_TEST ?? "postgres://motor:motor@localhost:55432/motor_test";
 const TABLES = ["reconciliations", "exceptions", "charges", "customers_map", "webhook_events", "odoo_events", "sync_watermarks", "audit_log"];
 export const TOKEN = "t".repeat(32), KEY = "k".repeat(32), CONSOLE_TOKEN = "c".repeat(40);
-export const CPF_OK = "52998224725";
-export const CNPJ_OK = "19950162000119";
+// Documentos SINTÉTICOS com dígito verificador válido. O CNPJ daqui já foi o da BLZA
+// Digital, a entidade que fatura este deal — e o repositório é público desde 10/09/2026.
+export const CPF_OK = "11144477735";
+export const CNPJ_OK = "11222333000181";
 
 export async function dbReachable(): Promise<boolean> {
   const pool = createPool(DB_URL);

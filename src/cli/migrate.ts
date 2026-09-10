@@ -1,8 +1,7 @@
-// Aplica db/migrations/*.sql em ordem, uma transação por arquivo, com lock entre processos (dois containers subindo).
-import { readFile } from "node:fs/promises";
-import path from "node:path";
+// Aplica db/migrations/*.sql em ordem. A lógica vive em adapters/db/migrations.ts (applyMigrations),
+// compartilhada com o modo demo: uma transação por arquivo, com lock entre processos.
 import pg from "pg";
-import { MIGRATIONS_DIR, pendingMigrations } from "../adapters/db/migrations.js";
+import { applyMigrations } from "../adapters/db/migrations.js";
 import { DEFAULT_DATABASE_URL } from "../adapters/db/pool.js";
 
 async function main() {
@@ -11,25 +10,9 @@ async function main() {
   const client = new pg.Client({ connectionString: url });
   await client.connect();
   try {
-    await client.query("select pg_advisory_lock(hashtext('sdc-motor:migrate'))");
-    await client.query("create table if not exists schema_migrations (name text primary key, applied_at timestamptz not null default now())");
-    const pending = await pendingMigrations(client);
-    for (const f of pending) {
-      const sql = await readFile(path.join(MIGRATIONS_DIR, f), "utf8");
-      await client.query("begin");
-      try {
-        await client.query(sql);
-        await client.query("insert into schema_migrations (name) values ($1)", [f]);
-        await client.query("commit");
-        console.log(`applied ${f}`);
-      } catch (e) {
-        await client.query("rollback");
-        throw new Error(`migration ${f} failed: ${(e as Error).message}`);
-      }
-    }
-    console.log(`ok — ${pending.length} applied now`);
+    const applied = await applyMigrations(client, { onApplied: (f) => console.log(`applied ${f}`) });
+    console.log(`ok — ${applied.length} applied now`);
   } finally {
-    await client.query("select pg_advisory_unlock(hashtext('sdc-motor:migrate'))").catch(() => undefined);
     await client.end();
   }
 }

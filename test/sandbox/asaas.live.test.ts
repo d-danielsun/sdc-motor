@@ -11,7 +11,7 @@ d("Asaas sandbox (vivo)", () => {
   const ref = `odoo:partner:${999100 + (Date.now() % 1000)}`;
 
   it("cliente: cria com notificações OFF, reaproveita por externalReference, liga no R3", async () => {
-    const created = await asaas.createCustomer({ name: "Motor Teste Cliente", cpfCnpj: "52998224725", email: "motor-teste@example.com", externalReference: ref, notificationDisabled: true });
+    const created = await asaas.createCustomer({ name: "Motor Teste Cliente", cpfCnpj: "11144477735", email: "motor-teste@example.com", externalReference: ref, notificationDisabled: true });
     expect(created.id).toMatch(/^cus_/);
     expect(created.notificationDisabled).toBe(true);
     const found = await asaas.findCustomerByExternalRef(ref);

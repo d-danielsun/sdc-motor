@@ -54,6 +54,39 @@ Listas devolvem `{ data, total, limit, offset }` (`limit` 1–200, default 50). 
 
 `worker` (1 min: eventos do Odoo e do Asaas, lotes de 20) · `sync-invoices` (15 min, varredura de segurança da ida, páginas de 200) · `reconcile-daily` (06:00 BRT, relê RECEIVED e RECEIVED_IN_CASH dos últimos `RECONCILE_LOOKBACK_DAYS`, e apaga `audit_log`/eventos processados > 90 dias) · `watchdog` (15 min: fila interrompida, penalidades, silêncio, idade da key). Um job nunca sobrepõe a si mesmo. Uma vez por ambiente: `WEBHOOK_PUBLIC_URL=… ALERT_EMAIL=… npm run job -- register-asaas-webhook`.
 
+## Modo demo
+
+`npm run demo -- <cenário>` deixa o banco `motor_demo` com um estado que dá para demonstrar,
+treinar alguém ou aceitar a UI. Sem isso o console nasce vazio, e a pessoa do financeiro veria
+uma exceção pela primeira vez em produção, no dia em que ela importa.
+
+| cenário | o que deixa na tela |
+|---|---|
+| `ciclo-feliz` | 1 fatura, 2 parcelas, boletos criados, 1 paga e baixada com diferença zero |
+| `sem-cpf` | fatura de cliente sem CPF/CNPJ: exceção `customer_missing_document`, nenhuma cobrança |
+| `divergente` | pagamento de R$ 90 numa cobrança de R$ 100: `amount_divergent`, sem baixa |
+| `juros` | pagamento de R$ 103,10 com `originalValue` R$ 100: `writeoff_needed`, pronto para aceitar |
+| `fila-parada` | webhook interrompido: `queue_interrupted` aberta e penalizações registradas |
+| `tudo` | todos os anteriores, mais 3 cobranças vencidas para o aging mostrar as 4 faixas |
+
+A semeadura passa pelas portas reais. Os fakes do Odoo e do Asaas rodam em processo e o
+repositório é o Postgres de verdade, então o estado que fica no banco é o que o motor
+produziria. Não há `INSERT` à mão e nenhuma chamada de rede, o que um teste afirma. Se o
+comportamento do motor mudar, o demo muda com ele ou a suíte quebra.
+
+Duas guardas valem citar. O comando recusa rodar se o banco não terminar em `_demo`, porque
+ele trunca tudo e em `motor` apagaria o desenvolvimento. E ele cria e migra o banco de
+demonstração sozinho na primeira vez, sem exigir um `db:reset`, que apagaria o banco de
+desenvolvimento de quem já tinha o Postgres de pé.
+
+As datas são relativas a hoje por desenho: um seed com datas fixas envelhece e passa a mostrar
+tudo na faixa de mais de 30 dias. Depois de semear, suba o motor apontando para o banco de
+demonstração e opere pelo console. As ações que chamariam Odoo ou Asaas falham como falhariam
+em produção sem acesso, e isso aparece na tela, que é o comportamento esperado.
+
+O login próprio do console chega com a issue #13. Até lá o acesso é pelo `CONSOLE_TOKEN`, e o
+comando imprime a URL e o que usar.
+
 ## CI
 
 Todo PR e todo push na `main` rodam dois workflows. Nenhum deles tem filtro `paths:` de
