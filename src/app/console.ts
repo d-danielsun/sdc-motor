@@ -29,6 +29,10 @@ export interface ConsoleDeps {
   auth?: AuthStore;
   /** Freio de tentativas injetável para o teste não depender de tempo real. */
   freio?: FreioDeLogin;
+  /** Quantos proxies existem na frente do motor. 0 = ignora X-Forwarded-For. */
+  proxiesConfiaveis?: number;
+  /** Permite cookie sem `Secure` em loopback. Ligado só fora de produção. */
+  permitirCookieInseguro?: boolean;
 }
 
 export const SESSION_COOKIE = "sdc_session";
@@ -54,6 +58,15 @@ export function cookieSeguro(c: Context): boolean {
 const LOOPBACK = /^(localhost|127\.0\.0\.1|\[::1\]|::1)(:\d+)?$/i;
 export function ehLoopback(host: string | undefined): boolean {
   return LOOPBACK.test((host ?? "").trim());
+}
+
+/** Cookie sem `Secure` só em http de loopback E com a exceção declarada. Antes bastava o
+ *  `Host: localhost`, que um proxy mal configurado pode reescrever — o cookie saía em claro
+ *  sem ninguém pedir. Em produção (NODE_ENV=production, como no Dockerfile) a exceção não
+ *  existe e o cookie é sempre Secure. */
+export function exigeSecure(c: Context, cd: Pick<ConsoleDeps, "permitirCookieInseguro">): boolean {
+  if (cookieSeguro(c)) return true;
+  return !(cd.permitirCookieInseguro === true && ehLoopback(c.req.header("host")));
 }
 
 const STATUS_BY_CODE: Record<ErrorCode | "internal" | "unauthorized", number> = { not_found: 404, invalid_state: 409, invalid_input: 400, upstream: 502, config: 500, busy: 409, internal: 500, unauthorized: 401 };
@@ -82,10 +95,31 @@ const who = (c: Context): string => {
  *  existe. Gerado uma vez, no carregamento do módulo. */
 const HASH_FALSO = "scrypt$16384$8$1$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 
-const clientIp = (c: Context): string => {
-  const xff = (c.req.header("x-forwarded-for") ?? "").split(",")[0]?.trim();
-  return (xff || c.req.header("x-real-ip") || "local").slice(0, 64);
-};
+/** De onde vem a requisição, para o freio de tentativas.
+ *
+ *  `X-Forwarded-For` é escrito pelo cliente: confiar nele de graça deixa qualquer um trocar
+ *  de identidade a cada tentativa, e o braço por IP do freio para de existir (achado do
+ *  verificador da #13). Então o default é o endereço do socket, e o header só vale quando o
+ *  operador declara quantos proxies existem na frente — aí o hop que interessa é o
+ *  N-ésimo a partir do fim, o único que um proxy honesto acrescentou.
+ *
+ *  Sem socket (o `app.request()` dos testes), cai em "local": o teste do freio passa a chave
+ *  que quer exercitar. */
+export function clientIp(c: Context, proxiesConfiaveis = 0): string {
+  if (proxiesConfiaveis > 0) {
+    const hops = (c.req.header("x-forwarded-for") ?? "").split(",").map((h) => h.trim()).filter(Boolean);
+    const escolhido = hops[hops.length - proxiesConfiaveis];
+    if (escolhido) return escolhido.slice(0, 64);
+  }
+  const socket = (c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined)?.incoming?.socket;
+  return (socket?.remoteAddress ?? "local").slice(0, 64);
+}
+
+/** O scrypt é caro de propósito (~50 ms de CPU), e o login é a única porta que aceita
+ *  trabalho pesado ANTES de autenticar. Sem teto, algumas centenas de tentativas simultâneas
+ *  comem o pool do banco e a CPU do processo. Quem passar do teto leva 429 na hora, sem
+ *  gastar scrypt — a resposta rápida é a defesa, não o enfileiramento. */
+export const MAX_LOGINS_SIMULTANEOS = 4;
 
 /** CSRF: um formulário cross-site só consegue mandar form-urlencoded ou multipart. Toda rota
  *  que muda estado exige JSON, o que um formulário não consegue forjar sem CORS. */
@@ -115,6 +149,7 @@ export function createConsoleApi(cd: ConsoleDeps): Hono {
   api.notFound((c) => c.json({ ok: false, code: "not_found", error: "not found" }, 404));
   // ── sessão ────────────────────────────────────────────────────────────────
   const freio = cd.freio ?? new FreioDeLogin();
+  let emVoo = 0;
   const naoAutorizado = (c: Context) => c.json({ ok: false, code: "unauthorized", error: "unauthorized" }, 401);
 
   api.post("/session", async (c) => {
@@ -124,20 +159,29 @@ export function createConsoleApi(cd: ConsoleDeps): Hono {
     const email = typeof body.email === "string" ? normalizeEmail(body.email) : "";
     const senha = typeof body.password === "string" ? body.password : "";
     const agora = cd.deps.clock.now();
-    const ip = clientIp(c);
+    const ip = clientIp(c, cd.proxiesConfiaveis ?? 0);
     const chaves = [`email:${email}`, `ip:${ip}`];
 
     if (!email || !senha) throw new BadInput("email e password são obrigatórios");
+    if (emVoo >= MAX_LOGINS_SIMULTANEOS) {
+      cd.deps.log("console: login recusado por concorrência", { emVoo, ip });
+      return c.json({ ok: false, code: "busy", error: "muitas tentativas simultâneas — tente de novo em instantes" }, 429);
+    }
     if (freio.bloqueado(chaves, agora)) {
       cd.deps.log("console: login barrado pelo freio", { email, ip });
       return c.json({ ok: false, code: "busy", error: "muitas tentativas — espere alguns minutos" }, 429);
     }
 
-    const u = isEmail(email) ? await cd.auth.porEmail(email) : null;
-    // Mesmo trabalho para e-mail inexistente e senha errada: sem o hash falso, o tempo de
-    // resposta diria quais e-mails existem.
-    const hash = u?.passwordHash ?? HASH_FALSO;
-    const senhaOk = await verifyPassword(senha, hash);
+    emVoo++;
+    let u: Awaited<ReturnType<AuthStore["porEmail"]>>, senhaOk: boolean;
+    try {
+      u = isEmail(email) ? await cd.auth.porEmail(email) : null;
+      // Mesmo trabalho para e-mail inexistente e senha errada: sem o hash falso, o tempo de
+      // resposta diria quais e-mails existem.
+      senhaOk = await verifyPassword(senha, u?.passwordHash ?? HASH_FALSO);
+    } finally {
+      emVoo--;
+    }
     if (!u || !u.active || !senhaOk) {
       freio.registrarFalha(chaves, agora);
       cd.deps.log("console: login negado", { email, ip });
@@ -147,11 +191,8 @@ export function createConsoleApi(cd: ConsoleDeps): Hono {
     freio.limpar(chaves);
     const s = await cd.auth.abrirSessao(u.id, agora);
     await cd.auth.marcarLogin(u.id, agora);
-    setCookie(c, SESSION_COOKIE, s.token, {
-      httpOnly: true, sameSite: "Lax", path: "/", maxAge: SESSION_TTL_SECONDS,
-      secure: cookieSeguro(c) || !ehLoopback(c.req.header("host")),
-    });
-    await cd.deps.repo.audit.log({ direction: "asaas_in", endpoint: "console:login", requestSummary: { email: u.email, ip } });
+    setCookie(c, SESSION_COOKIE, s.token, { httpOnly: true, sameSite: "Lax", path: "/", maxAge: SESSION_TTL_SECONDS, secure: exigeSecure(c, cd) });
+    await cd.deps.repo.audit.log({ direction: "console", endpoint: "console:login", requestSummary: { email: u.email, ip } });
     return c.json({ ok: true, action: "login", user: { email: u.email, name: u.name }, expiresAt: s.expiresAt.toISOString() });
   });
 
@@ -160,31 +201,47 @@ export function createConsoleApi(cd: ConsoleDeps): Hono {
     if (cd.auth && tokenBemFormado(token)) {
       const sessao = await cd.auth.resolverSessao(token, cd.deps.clock.now());
       await cd.auth.fecharSessao(token);
-      if (sessao) await cd.deps.repo.audit.log({ direction: "asaas_in", endpoint: "console:logout", requestSummary: { email: sessao.user.email } });
+      if (sessao) await cd.deps.repo.audit.log({ direction: "console", endpoint: "console:logout", requestSummary: { email: sessao.user.email } });
     }
-    setCookie(c, SESSION_COOKIE, "", { httpOnly: true, sameSite: "Lax", path: "/", maxAge: 0, secure: cookieSeguro(c) || !ehLoopback(c.req.header("host")) });
+    setCookie(c, SESSION_COOKIE, "", { httpOnly: true, sameSite: "Lax", path: "/", maxAge: 0, secure: exigeSecure(c, cd) });
     return c.json({ ok: true, action: "logout" });
   });
 
-  // Guarda de tudo o que vem depois. A ordem importa: /session já foi registrada acima.
-  api.use("*", async (c, next) => {
-    const ehJob = c.req.method === "POST" && /^\/jobs\//.test(new URL(c.req.url).pathname.replace(/^.*\/api\/v1/, ""));
+  /** Resolve o cookie de sessão, se houver uma válida. */
+  const sessaoDe = async (c: Context) => {
     const token = getCookie(c, SESSION_COOKIE);
-    if (cd.auth && tokenBemFormado(token)) {
-      const sessao = await cd.auth.resolverSessao(token, cd.deps.clock.now());
-      if (sessao) {
-        c.set("consoleUser", sessao.user);
-        if (c.req.method !== "GET") exigeJsonSeTiverCorpo(c);
-        await next();
-        return;
-      }
-    }
-    // O token compartilhado sobrou para UM caso: o cron externo chamando um job.
-    if (ehJob && cd.token) {
+    if (!cd.auth || !tokenBemFormado(token)) return null;
+    return cd.auth.resolverSessao(token, cd.deps.clock.now());
+  };
+
+  // ── jobs: o ÚNICO lugar onde o token compartilhado ainda abre porta ───────
+  //
+  // Sub-app próprio de propósito. Antes isto era um `if` dentro do middleware geral, que
+  // decidia "isto é um job?" com regex sobre a URL re-parseada — ou seja, o guard de
+  // segurança lia o caminho com um parser e o roteador com outro. Não era explorável, mas
+  // dois parsers discordando é como furo de autenticação nasce. Agora quem decide que a rota
+  // é de job é o próprio roteador: se este handler rodou, é job.
+  const jobsApp = new Hono();
+  jobsApp.post("/:name", async (c) => {
+    const sessao = await sessaoDe(c);
+    if (!sessao) {
       const auth = c.req.header("authorization") ?? "";
-      if (safeEqual(auth.startsWith("Bearer ") ? auth.slice(7) : null, cd.token)) { await next(); return; }
+      if (!cd.token || !safeEqual(auth.startsWith("Bearer ") ? auth.slice(7) : null, cd.token)) return naoAutorizado(c);
     }
-    return naoAutorizado(c);
+    const name = c.req.param("name");
+    if (!cd.jobs || !cd.jobs.isJob(name)) return c.json({ ok: false, code: "not_found", error: "job desconhecido" }, 404);
+    const result = await cd.jobs.run(name);
+    return c.json({ ok: result !== null, action: `job:${name}`, detail: result }, result !== null ? 200 : 502);
+  });
+  api.route("/jobs", jobsApp);
+
+  // Guarda de todo o resto. Registrada DEPOIS de /session e /jobs, então não os envolve.
+  api.use("*", async (c, next) => {
+    const sessao = await sessaoDe(c);
+    if (!sessao) return naoAutorizado(c);
+    c.set("consoleUser", sessao.user);
+    if (c.req.method !== "GET") exigeJsonSeTiverCorpo(c);
+    await next();
   });
 
   api.get("/me", async (c) => {
@@ -225,12 +282,5 @@ export function createConsoleApi(cd: ConsoleDeps): Hono {
   });
   api.put("/config/:key", async (c) => send(c, await setConsoleConfig(cd.deps, c.req.param("key"), (await jsonObject(c)).value)));
   api.post("/customers/enable-notifications", async (c) => send(c, await enableCustomerNotifications(cd.deps)));
-  // Cron externo (Supabase) chama aqui; mesmo guard de não-sobreposição do scheduler em processo.
-  api.post("/jobs/:name", async (c) => {
-    const name = c.req.param("name");
-    if (!cd.jobs || !cd.jobs.isJob(name)) return c.json({ ok: false, code: "not_found", error: "job desconhecido" }, 404);
-    const result = await cd.jobs.run(name);
-    return c.json({ ok: result !== null, action: `job:${name}`, detail: result }, result !== null ? 200 : 502);
-  });
   return api;
 }

@@ -60,6 +60,17 @@ describe("SPA do console", () => {
     for (const a of acoes) expect(consoleTs, `a API não tem /exceptions/:id/${a}`).toContain(`/exceptions/:id/${a}`);
   });
 
+  it("href de dado do servidor passa por validação de esquema (P3 do verificador)", () => {
+    // `href` é o único atributo em que dado do servidor não é texto: um `javascript:` vindo
+    // de um boleto viraria execução no clique.
+    expect(app).toContain("const urlSegura =");
+    for (const m of app.matchAll(/href:\s*([A-Za-z_$][\w.$]*)/g)) {
+      const variavel = m[1] as string;
+      expect(["boleto", "boletoUrl"], `href: ${variavel} não passou por urlSegura`).toContain(variavel);
+    }
+    expect(app).not.toMatch(/href:\s*ch\.bankSlipUrl/);
+  });
+
   it("nenhum dado do servidor entra por innerHTML", () => {
     // Nome de cliente e mensagem de erro vêm do Odoo e do Asaas: montar com textContent é o
     // que impede que um cadastro com `<script>` vire execução na tela do financeiro.

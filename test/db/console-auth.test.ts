@@ -3,10 +3,10 @@
 // desativado, e o token de sessão não sobrevive em lugar nenhum além do cookie do navegador.
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createConsoleQueries } from "../../src/adapters/db/console.js";
-import { createConsoleApi, cookieSeguro, ehLoopback } from "../../src/app/console.js";
+import { MAX_LOGINS_SIMULTANEOS, clientIp, createConsoleApi, cookieSeguro, ehLoopback, exigeSecure } from "../../src/app/console.js";
 import { createJobRunner } from "../../src/app/scheduler.js";
 import { createServer } from "../../src/app/server.js";
-import { FreioDeLogin, LOGIN_MAX_TENTATIVAS, hashPassword, hashToken } from "../../src/core/auth.js";
+import { CUSTO_TESTE, FreioDeLogin, LOGIN_MAX_TENTATIVAS, hashPassword, hashToken } from "../../src/core/auth.js";
 import { CONSOLE_TOKEN, USUARIO, dbReachable, json, world, type World } from "../helpers.js";
 
 let w: World | undefined;
@@ -138,7 +138,7 @@ describe("login do console (#13)", () => {
     w = await world();
     expect((await w!.api("/charges")).status).toBe(200);
     const u = (await w!.auth.porEmail(USUARIO.email))!;
-    await w!.auth.definirSenha(USUARIO.email, await hashPassword("outra-senha-boa-9"));
+    await w!.auth.definirSenha(USUARIO.email, await hashPassword("outra-senha-boa-9", { custo: CUSTO_TESTE }));
     expect(await w!.auth.revogarDoUsuario(u.id)).toBeGreaterThan(0);
     expect((await w!.api("/charges")).status).toBe(401);
     // e a senha nova entra
@@ -212,5 +212,65 @@ describe("login do console (#13)", () => {
     expect((await r.json()).error).toMatch(/0005/);
     expect((await semLogin.request("/api/v1/charges")).status).toBe(401);
     expect((await semLogin.request("/api/v1/jobs/watchdog", { method: "POST", headers: { authorization: `Bearer ${CONSOLE_TOKEN}` } })).status).toBe(200);
+  });
+});
+
+// ── endurecimento vindo do verificador da #13 ────────────────────────────────
+describe("endurecimento pós-verificação", () => {
+  const req = (headers: Record<string, string> = {}, socket?: string) =>
+    ({ req: { url: "http://motor.local/api/v1/session", header: (h: string) => headers[h.toLowerCase()] }, env: socket ? { incoming: { socket: { remoteAddress: socket } } } : undefined }) as never;
+
+  it("X-Forwarded-For NÃO é a identidade do freio por default (P2 do verificador)", () => {
+    // O header é escrito pelo cliente: se ele valesse de graça, trocar de identidade a cada
+    // tentativa desligaria o braço por IP do freio, e era isso que acontecia.
+    expect(clientIp(req({ "x-forwarded-for": "9.9.9.9" }, "10.0.0.7"))).toBe("10.0.0.7");
+    expect(clientIp(req({ "x-forwarded-for": "9.9.9.9" }))).toBe("local");
+  });
+  it("com proxy declarado, o hop que vale é o que o proxy acrescentou", () => {
+    // XFF = "cliente, proxy1". Com 1 proxy confiável, o último é o único não forjável.
+    expect(clientIp(req({ "x-forwarded-for": "1.1.1.1, 2.2.2.2" }, "10.0.0.7"), 1)).toBe("2.2.2.2");
+    expect(clientIp(req({ "x-forwarded-for": "1.1.1.1, 2.2.2.2, 3.3.3.3" }), 2)).toBe("2.2.2.2");
+    // header ausente com proxy declarado cai no socket, não em string vazia
+    expect(clientIp(req({}, "10.0.0.7"), 1)).toBe("10.0.0.7");
+  });
+
+  it("cookie sem Secure exige a exceção declarada, não só o Host (P3 do verificador)", () => {
+    const local = req({ host: "localhost:8787" });
+    expect(exigeSecure(local, { permitirCookieInseguro: true })).toBe(false);   // dev local
+    expect(exigeSecure(local, { permitirCookieInseguro: false })).toBe(true);   // produção
+    expect(exigeSecure(local, {})).toBe(true);                                  // default fecha
+    // proxy que reescreve o Host para localhost não consegue mais derrubar o Secure
+    expect(exigeSecure(req({ host: "localhost", "x-forwarded-proto": "http" }), { permitirCookieInseguro: false })).toBe(true);
+    expect(cookieSeguro(req({ host: "motor.exemplo.com.br", "x-forwarded-proto": "https" }))).toBe(true);
+    expect(ehLoopback("localhost:8787")).toBe(true);
+  });
+
+  it("caminho torto não faz uma rota de dados aceitar o token do cron (P3 do verificador)", async () => {
+    w = await world();
+    // Antes, "isto é um job?" era regex sobre a URL re-parseada, enquanto o roteador usava
+    // outro parser. Agora quem decide é o roteador: /jobs tem sub-app próprio.
+    const tortos = [
+      "/exceptions/..\\..\\api\\v1\\jobs\\x/resolve",
+      "/api/v1/jobs/x/../../charges",
+      "/jobs/../charges",
+      "/charges?x=/jobs/",
+      "/JOBS/watchdog",
+    ];
+    for (const caminho of tortos) {
+      const r = await w!.api(caminho, { method: "POST" }, { cookie: null, bearer: CONSOLE_TOKEN });
+      expect([401, 404], `${caminho} devolveu ${r.status}`).toContain(r.status);
+    }
+    // e o caminho honesto continua funcionando
+    expect((await w!.api("/jobs/watchdog", { method: "POST" }, { cookie: null, bearer: CONSOLE_TOKEN })).status).toBe(200);
+  });
+
+  it("logins simultâneos além do teto levam 429 sem gastar scrypt", async () => {
+    w = await world();
+    const tentativas = Array.from({ length: MAX_LOGINS_SIMULTANEOS + 6 }, () => entrar(USUARIO.email, "errada-de-proposito"));
+    const status = (await Promise.all(tentativas)).map((r) => r.status);
+    // O teto e o freio de 5 tentativas atuam juntos: o que importa é que ninguém fica pendurado
+    // e que a rota se defende em vez de enfileirar trabalho caro.
+    expect(status.every((s) => s === 401 || s === 429)).toBe(true);
+    expect(status.filter((s) => s === 429).length).toBeGreaterThan(0);
   });
 });

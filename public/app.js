@@ -32,6 +32,10 @@ const el = (tag, props = {}, filhos = []) => {
 };
 const limpar = (n) => { while (n.firstChild) n.removeChild(n.firstChild); return n; };
 
+/** `href` é o único atributo em que dado do servidor não é texto: um `javascript:` vindo de
+ *  um boleto viraria execução no clique. Só http(s) passa. */
+const urlSegura = (v) => (typeof v === "string" && /^https?:\/\//i.test(v) ? v : null);
+
 const dinheiro = (v) => {
   const n = Number(v);
   return Number.isFinite(n) ? n.toLocaleString("pt-BR", { style: "currency", currency: "BRL" }) : String(v ?? "—");
@@ -310,9 +314,10 @@ async function carregarCobrancas() {
       ch.received ? el("span", { texto: `recebido ${dinheiro(ch.received.amountReceived)} em ${data(ch.received.paymentDate)}` }) : null,
     ]);
     const item = el("div", { class: "item", onclick: () => abrirCobranca(ch.id) }, [linha1, meta]);
-    if (ch.bankSlipUrl) {
+    const boleto = urlSegura(ch.bankSlipUrl);
+    if (boleto) {
       // O clique no boleto não pode abrir o detalhe junto.
-      const link = el("a", { href: ch.bankSlipUrl, target: "_blank", rel: "noopener noreferrer", texto: "abrir boleto", onclick: (ev) => ev.stopPropagation() });
+      const link = el("a", { href: boleto, target: "_blank", rel: "noopener noreferrer", texto: "abrir boleto", onclick: (ev) => ev.stopPropagation() });
       item.appendChild(el("div", { class: "meta" }, [link]));
     }
     lista.appendChild(item);
@@ -336,7 +341,8 @@ async function abrirCobranca(id) {
     ch.nossoNumero ? ["Nosso número", ch.nossoNumero] : null,
     ["Criada em", quando(ch.createdAt)],
   ]));
-  if (ch.bankSlipUrl) corpo.appendChild(el("p", {}, [el("a", { href: ch.bankSlipUrl, target: "_blank", rel: "noopener noreferrer", texto: "abrir boleto" })]));
+  const boletoUrl = urlSegura(ch.bankSlipUrl);
+  if (boletoUrl) corpo.appendChild(el("p", {}, [el("a", { href: boletoUrl, target: "_blank", rel: "noopener noreferrer", texto: "abrir boleto" })]));
 
   if (ch.reconciliations?.length) {
     corpo.appendChild(el("h3", { texto: "Conciliação" }));

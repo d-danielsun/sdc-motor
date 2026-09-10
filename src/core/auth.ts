@@ -12,9 +12,17 @@ import { promisify } from "node:util";
 
 const scrypt = promisify(scryptCb) as (senha: string | Buffer, salt: Buffer, keylen: number, opts: { N: number; r: number; p: number; maxmem?: number }) => Promise<Buffer>;
 
-/** Custo padrão. N=16384 leva ~50ms num laptop: cara o suficiente para força bruta, barata
- *  o suficiente para o login não travar. maxmem tem que caber 128*N*r ou o node recusa. */
+export interface CustoScrypt { N: number; r: number; p: number }
+
+/** Custo de produção: ~240 ms e 16 MB num laptop M-series (medido, não estimado). Cara o
+ *  suficiente para força bruta doer, barata o suficiente para o login não parecer travado.
+ *  maxmem tem que caber 128*N*r ou o node recusa. */
 export const SCRYPT = { N: 16_384, r: 8, p: 1, keylen: 32, saltBytes: 16 } as const;
+
+/** Custo BARATO, só para teste. A suíte cria e confere dezenas de senhas; com o custo de
+ *  produção ela levava minutos, e suíte lenta é suíte que ninguém roda. O formato do hash
+ *  carrega os próprios parâmetros, então o mesmo `verifyPassword` confere os dois. */
+export const CUSTO_TESTE: CustoScrypt = { N: 1024, r: 8, p: 1 };
 const MAXMEM = 64 * 1024 * 1024;
 
 export const SESSION_TTL_SECONDS = 12 * 60 * 60;   // 43200, o Max-Age do cookie
@@ -42,11 +50,12 @@ export function assertSenhaAceitavel(senha: string): void {
 }
 
 /** Deriva o hash de uma senha. Formato: scrypt$N$r$p$salt_b64$hash_b64 */
-export async function hashPassword(senha: string, o: { salt?: Buffer } = {}): Promise<string> {
+export async function hashPassword(senha: string, o: { salt?: Buffer; custo?: CustoScrypt } = {}): Promise<string> {
   assertSenhaAceitavel(senha);
+  const { N, r, p } = o.custo ?? SCRYPT;
   const salt = o.salt ?? randomBytes(SCRYPT.saltBytes);
-  const hash = await scrypt(senha.normalize("NFKC"), salt, SCRYPT.keylen, { N: SCRYPT.N, r: SCRYPT.r, p: SCRYPT.p, maxmem: MAXMEM });
-  return `scrypt$${SCRYPT.N}$${SCRYPT.r}$${SCRYPT.p}$${salt.toString("base64")}$${hash.toString("base64")}`;
+  const hash = await scrypt(senha.normalize("NFKC"), salt, SCRYPT.keylen, { N, r, p, maxmem: MAXMEM });
+  return `scrypt$${N}$${r}$${p}$${salt.toString("base64")}$${hash.toString("base64")}`;
 }
 
 /** Confere a senha contra o hash guardado. Nunca lança por hash malformado: devolve false. */

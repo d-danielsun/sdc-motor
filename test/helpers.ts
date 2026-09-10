@@ -8,7 +8,7 @@ import { createConsoleApi } from "../src/app/console.js";
 import { createJobRunner } from "../src/app/scheduler.js";
 import { createAuthStore } from "../src/adapters/db/auth.js";
 import { createConsoleQueries } from "../src/adapters/db/console.js";
-import { hashPassword, type FreioDeLogin } from "../src/core/auth.js";
+import { CUSTO_TESTE, hashPassword, type FreioDeLogin } from "../src/core/auth.js";
 import { CONFIG_KEYS } from "../src/core/console.js";
 import type { Deps } from "../src/core/ports.js";
 
@@ -57,7 +57,7 @@ export async function world(o: { today?: string; idaEnabled?: boolean; cutoff?: 
   const app = () => createServer({ repo, asaasWebhookToken: TOKEN, odooWebhookKey: KEY, log: () => {}, console: consoleApi });
 
   // Uma pessoa logada, porque desde a #13 o token compartilhado não abre rota de dados.
-  const pessoa = await auth.criarOuAtualizar({ email: USUARIO.email, name: USUARIO.name, passwordHash: await hashPassword(USUARIO.senha) });
+  const pessoa = await auth.criarOuAtualizar({ email: USUARIO.email, name: USUARIO.name, passwordHash: await hashPassword(USUARIO.senha, { custo: CUSTO_TESTE }) });
   const { token: sessao } = await auth.abrirSessao(pessoa.id, deps.clock.now());
 
   const api: World["api"] = async (path, init = {}, o = {}) => {

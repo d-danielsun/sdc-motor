@@ -9,7 +9,7 @@ export type ExceptionType =
   | "reversal_pending" | "queue_interrupted" | "stale_heartbeat" | "api_key_expiring"
   | "writeoff_needed" | "webhook_penalized" | "integration_error";
 export type DiffPolicy = "juros_multa" | "in_cash" | "writeoff_financeiro" | "exception" | "ja_baixada_no_odoo";
-export type AuditDirection = "odoo_out" | "asaas_out" | "asaas_in" | "odoo_in";
+export type AuditDirection = "odoo_out" | "asaas_out" | "asaas_in" | "odoo_in" | "console";
 
 // ── Odoo (o que o motor precisa saber de uma fatura) ─────────────────────────
 export interface OdooInvoice {

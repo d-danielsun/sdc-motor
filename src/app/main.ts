@@ -14,7 +14,13 @@ const auth = createAuthStore(pool);
 const jobs = createJobRunner(deps, { purgarSessoes: (agora) => auth.purgarExpiradas(agora) });
 const app = createServer({
   repo: deps.repo, asaasWebhookToken: env.ASAAS_WEBHOOK_TOKEN, odooWebhookKey: env.ODOO_WEBHOOK_KEY, log: jsonLog,
-  console: createConsoleApi({ deps, queries, token: env.CONSOLE_TOKEN, jobs, auth }),
+  console: createConsoleApi({
+    deps, queries, token: env.CONSOLE_TOKEN, jobs, auth,
+    proxiesConfiaveis: env.TRUSTED_PROXIES,
+    // Fora de produção o cookie pode sair sem `Secure` em loopback, senão não há como logar
+    // em http://localhost. O Dockerfile define NODE_ENV=production, então na imagem não vale.
+    permitirCookieInseguro: process.env.NODE_ENV !== "production",
+  }),
   staticRoot: "./public",
 });
 const scheduler = startScheduler(deps, { runner: jobs });

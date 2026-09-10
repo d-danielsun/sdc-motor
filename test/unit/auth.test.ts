@@ -3,21 +3,25 @@
 // por e-mail E por IP.
 import { describe, expect, it } from "vitest";
 import {
-  FreioDeLogin, LOGIN_MAX_TENTATIVAS, MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH, SESSION_TTL_SECONDS,
-  SenhaInvalida, assertSenhaAceitavel, gerarSenha, hashPassword, hashToken, isEmail, normalizeEmail,
-  novaSessao, tokenBemFormado, verifyPassword,
+  CUSTO_TESTE, FreioDeLogin, LOGIN_MAX_TENTATIVAS, MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH, SCRYPT,
+  SESSION_TTL_SECONDS, SenhaInvalida, assertSenhaAceitavel, gerarSenha, hashPassword, hashToken,
+  isEmail, normalizeEmail, novaSessao, tokenBemFormado, verifyPassword,
 } from "../../src/core/auth.js";
+
+// O custo de produção (~240 ms por hash) tornaria este arquivo inaceitavelmente lento; o que
+// está sob teste aqui é o FORMATO e a lógica, não o custo. O teste do custo é logo abaixo.
+const hash = (senha: string) => hashPassword(senha, { custo: CUSTO_TESTE });
 
 describe("senha", () => {
   it("hash confere com a senha certa e recusa a errada", async () => {
-    const h = await hashPassword("uma-senha-boa-1");
+    const h = await hash("uma-senha-boa-1");
     expect(await verifyPassword("uma-senha-boa-1", h)).toBe(true);
     expect(await verifyPassword("uma-senha-boa-2", h)).toBe(false);
     expect(await verifyPassword("", h)).toBe(false);
   });
   it("o hash carrega os próprios parâmetros e nunca repete o salt", async () => {
-    const a = await hashPassword("uma-senha-boa-1");
-    const b = await hashPassword("uma-senha-boa-1");
+    const a = await hash("uma-senha-boa-1");
+    const b = await hash("uma-senha-boa-1");
     expect(a).not.toBe(b);                       // salt diferente
     expect(a.split("$")[0]).toBe("scrypt");
     expect(a.split("$").length).toBe(6);         // scrypt$N$r$p$salt$hash
@@ -34,14 +38,14 @@ describe("senha", () => {
     const composta = "senha-café-longa";          // café com "é" pronto
     const decomposta = "senha-café-longa";       // e + acento combinante
     expect(composta).not.toBe(decomposta);
-    expect(await verifyPassword(decomposta, await hashPassword(composta))).toBe(true);
+    expect(await verifyPassword(decomposta, await hash(composta))).toBe(true);
   });
   it("recusa senha curta demais e longa demais em vez de truncar", async () => {
     expect(() => assertSenhaAceitavel("x".repeat(MIN_PASSWORD_LENGTH - 1))).toThrow(SenhaInvalida);
     expect(() => assertSenhaAceitavel("x".repeat(MAX_PASSWORD_LENGTH + 1))).toThrow(SenhaInvalida);
     expect(() => assertSenhaAceitavel("x".repeat(MIN_PASSWORD_LENGTH))).not.toThrow();
     // e senha absurda não vira igual à sua versão cortada
-    const h = await hashPassword("y".repeat(MAX_PASSWORD_LENGTH));
+    const h = await hash("y".repeat(MAX_PASSWORD_LENGTH));
     expect(await verifyPassword("y".repeat(MAX_PASSWORD_LENGTH + 1), h)).toBe(false);
   });
   it("a senha gerada é longa, sem caractere ambíguo e nunca igual à anterior", () => {
@@ -54,6 +58,18 @@ describe("senha", () => {
       vistas.add(s);
     }
     expect(vistas.size).toBe(50);
+  });
+});
+
+describe("custo de produção", () => {
+  it("o hash de produção carrega os parâmetros de produção, não os de teste", async () => {
+    const h = await hashPassword("uma-senha-boa-1");   // sem custo → default
+    expect(h.startsWith(`scrypt$${SCRYPT.N}$${SCRYPT.r}$${SCRYPT.p}$`)).toBe(true);
+    expect(SCRYPT.N).toBeGreaterThanOrEqual(16_384);   // não deixar o custo cair sem alguém ver
+    expect(await verifyPassword("uma-senha-boa-1", h)).toBe(true);
+    // e um hash barato de teste NÃO passa por hash de produção sem ser notado
+    const barato = await hashPassword("uma-senha-boa-1", { custo: CUSTO_TESTE });
+    expect(barato).not.toContain(`$${SCRYPT.N}$`);
   });
 });
 
