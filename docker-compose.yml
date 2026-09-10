@@ -3,6 +3,7 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: sdc-motor-postgres
+    restart: unless-stopped
     environment:
       POSTGRES_USER: motor
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-motor}   # dev: motor; fora do laptop, defina POSTGRES_PASSWORD
@@ -25,16 +26,29 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgres://motor:${POSTGRES_PASSWORD:-motor}@postgres:5432/motor
+      PGHOST: postgres
+      PGUSER: motor
+      PGPASSWORD: ${POSTGRES_PASSWORD:-motor}
+      PGDATABASE: motor
   motor:                       # docker compose --profile motor up  → migrate + motor + Postgres, sem Supabase
     profiles: ["motor"]
     build: .
     container_name: sdc-motor
+    restart: unless-stopped
+    stop_grace_period: 70s                                   # main.ts espera até 60 s por escrita financeira em andamento
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     depends_on:
       migrate:
         condition: service_completed_successfully
     environment:
-      DATABASE_URL: postgres://motor:${POSTGRES_PASSWORD:-motor}@postgres:5432/motor
+      PGHOST: postgres
+      PGUSER: motor
+      PGPASSWORD: ${POSTGRES_PASSWORD:-motor}
+      PGDATABASE: motor
       ASAAS_URL: ${ASAAS_URL:-https://api-sandbox.asaas.com/v3}
       ASAAS_API_KEY: ${ASAAS_API_KEY}
       ASAAS_WEBHOOK_TOKEN: ${ASAAS_WEBHOOK_TOKEN}

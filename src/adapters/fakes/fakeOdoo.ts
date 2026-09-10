@@ -5,7 +5,7 @@ import type { OdooClient } from "../../core/ports.js";
 import type { OdooInvoice, OdooInvoiceLine, OdooPartner, OdooPaymentResult } from "../../core/types.js";
 import { fromOdooDatetime } from "../odoo/client.js";
 
-export interface FakePayment { id: number; moveLineId: number; amount: string; paymentDate: string }
+export interface FakePayment { id: number; moveLineId: number; amount: string; paymentDate: string; ref: string | null }
 
 export class FakeOdoo implements OdooClient {
   partners = new Map<number, OdooPartner>();
@@ -50,12 +50,19 @@ export class FakeOdoo implements OdooClient {
     const after = q.after;
     return [...this.invoices.values()]
       .filter((i) => i.moveType === "out_invoice")
-      .filter((i) => !after || i.writeDate > after.writeDate || (i.writeDate === after.writeDate && i.id > after.id))
+      .filter((i) => !after || i.writeDate.slice(0, 19) > after.writeDate.slice(0, 19) || (i.writeDate.slice(0, 19) === after.writeDate.slice(0, 19) && i.id > after.id))
       .filter((i) => !q.invoiceDateFrom || (i.invoiceDate ?? "") >= q.invoiceDateFrom)
       .filter((i) => !q.partnerId || i.partnerId === q.partnerId)
       .sort((a, b) => a.writeDate.localeCompare(b.writeDate) || a.id - b.id)
       .slice(0, q.limit ?? 200)
       .map((i) => ({ ...i }));
+  }
+  async searchInvoicesInSecond(q: { second: string; afterId: number; invoiceDateFrom?: string | null; limit?: number }): Promise<OdooInvoice[]> {
+    const sec = q.second.slice(0, 19);
+    return [...this.invoices.values()]
+      .filter((i) => i.moveType === "out_invoice" && i.writeDate.slice(0, 19) === sec && i.id > q.afterId)
+      .filter((i) => !q.invoiceDateFrom || (i.invoiceDate ?? "") >= q.invoiceDateFrom)
+      .sort((a, b) => a.id - b.id).slice(0, q.limit ?? 200).map((i) => ({ ...i }));
   }
   async getInvoice(id: number): Promise<OdooInvoice | null> { const i = this.invoices.get(id); return i ? { ...i } : null; }
   async getPaymentTermLines(moveId: number): Promise<OdooInvoiceLine[]> {
@@ -64,9 +71,11 @@ export class FakeOdoo implements OdooClient {
   async getOpenPaymentTermLines(moveId: number): Promise<OdooInvoiceLine[]> { return (await this.getPaymentTermLines(moveId)).filter((l) => !l.reconciled); }
   async getPaymentTermLine(lineId: number): Promise<OdooInvoiceLine | null> { const l = this.lines.get(lineId); return l ? { ...l } : null; }
   async getPartner(id: number): Promise<OdooPartner | null> { const p = this.partners.get(id); return p ? { ...p } : null; }
-  async registerPayment(p: { moveLineId: number; amount: string; paymentDate: string }): Promise<OdooPaymentResult> {
+  async registerPayment(p: { moveLineId: number; amount: string; paymentDate: string; ref?: string }): Promise<OdooPaymentResult> {
     const line = this.lines.get(p.moveLineId);
     if (!line) throw new Error(`fake odoo: move line ${p.moveLineId} não existe`);
+    const stray = p.ref ? this.payments.find((x) => x.ref === p.ref) : undefined;
+    if (stray) { if (line.reconciled) return { paymentId: stray.id, paymentState: this.invoices.get(line.moveId)!.paymentState }; throw Object.assign(new Error(`fake odoo: pagamento #${stray.id} já existe com ref ${p.ref} e a parcela continua aberta`), { transient: false }); }
     if (line.reconciled) throw new Error(`fake odoo: move line ${p.moveLineId} já conciliada`);
     line.amountResidual = toCents(p.amount) >= toCents(line.amountResidual) ? "0.00" : sub(line.amountResidual, p.amount);
     line.reconciled = line.amountResidual === "0.00";
@@ -75,7 +84,7 @@ export class FakeOdoo implements OdooClient {
     const open = [...this.lines.values()].filter((l) => l.moveId === inv.id && !l.reconciled);
     inv.paymentState = open.length === 0 ? "in_payment" : "partial";
     inv.writeDate = this.stamp();
-    const payment = { id: this.nextPaymentId++, moveLineId: p.moveLineId, amount: p.amount, paymentDate: p.paymentDate };
+    const payment = { id: this.nextPaymentId++, moveLineId: p.moveLineId, amount: p.amount, paymentDate: p.paymentDate, ref: p.ref ?? null };
     this.payments.push(payment);
     return { paymentId: payment.id, paymentState: inv.paymentState };
   }

@@ -66,6 +66,11 @@ export class AsaasHttpClient implements AsaasClient {
     const r = await this.req<{ data: Raw[] }>("GET", `/customers?externalReference=${encodeURIComponent(ref)}&limit=1`);
     return this.list(r, (x) => this.customer(x)).items[0] ?? null;
   }
+  async findCustomerByDocument(cpfCnpj: string): Promise<AsaasCustomer | null> {
+    if (!/^\d{11}$|^\d{14}$/.test(cpfCnpj)) return null;
+    const r = await this.req<{ data: Raw[] }>("GET", `/customers?cpfCnpj=${cpfCnpj}&limit=1`);
+    return this.list(r, (x) => this.customer(x)).items[0] ?? null;
+  }
   async createCustomer(c: Parameters<AsaasClient["createCustomer"]>[0]): Promise<AsaasCustomer> {
     const r = await this.req<Raw>("POST", "/customers", { name: c.name, cpfCnpj: c.cpfCnpj, email: c.email ?? undefined, mobilePhone: c.phone ?? undefined, externalReference: c.externalReference, notificationDisabled: c.notificationDisabled });
     return this.customer(r!);

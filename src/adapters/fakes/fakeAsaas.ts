@@ -14,6 +14,9 @@ export class FakeAsaas implements AsaasClient {
   async findCustomerByExternalRef(ref: string): Promise<AsaasCustomer | null> {
     return [...this.customers.values()].find((c) => c.externalReference === ref) ?? null;
   }
+  async findCustomerByDocument(cpfCnpj: string): Promise<AsaasCustomer | null> {
+    return [...this.customers.values()].find((c) => c.cpfCnpj === cpfCnpj) ?? null;
+  }
   async createCustomer(c: Parameters<AsaasClient["createCustomer"]>[0]): Promise<AsaasCustomer> {
     if (!/^\d{11}$|^\d{14}$/.test(c.cpfCnpj)) throw new Error("fake asaas: cpfCnpj inválido");
     const cust: AsaasCustomer = { id: this.next("cus"), name: c.name, cpfCnpj: c.cpfCnpj, email: c.email ?? null, externalReference: c.externalReference, notificationDisabled: c.notificationDisabled };

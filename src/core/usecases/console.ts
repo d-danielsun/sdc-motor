@@ -118,6 +118,9 @@ export async function setConsoleConfig(deps: Deps, key: string, value: unknown):
   if (!(CONSOLE_CONFIG_KEYS as readonly string[]).includes(key)) return fail("invalid_input", `chave não editável: ${key}`);
   const k = key as ConsoleConfigKey;
   if (!validators[k](value)) return fail("invalid_input", `valor inválido para ${k}`);
+  // Ligar a ida sem data de corte emitiria boleto pro histórico inteiro do Odoo na primeira varredura (red team).
+  if (k === "IDA_ENABLED" && value === true && !(await deps.repo.config.get<string | null>("GO_LIVE_CUTOFF_DATE"))) return fail("invalid_state", "defina GO_LIVE_CUTOFF_DATE antes de ligar IDA_ENABLED");
+  if (k === "GO_LIVE_CUTOFF_DATE" && value === null && (await deps.repo.config.get<boolean>("IDA_ENABLED")) === true) return fail("invalid_state", "desligue IDA_ENABLED antes de remover a data de corte");
   await deps.repo.config.set(k, k === "TOLERANCE_BRL" ? String(value) : value);
   return { ok: true, action: "config_set", detail: { key: k, value } };
 }

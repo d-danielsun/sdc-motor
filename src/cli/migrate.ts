@@ -6,7 +6,9 @@ import { MIGRATIONS_DIR, pendingMigrations } from "../adapters/db/migrations.js"
 import { DEFAULT_DATABASE_URL } from "../adapters/db/pool.js";
 
 async function main() {
-  const client = new pg.Client({ connectionString: process.env.DATABASE_URL ?? DEFAULT_DATABASE_URL });
+  const e = process.env;
+  const url = e.DATABASE_URL ?? (e.PGHOST ? `postgres://${encodeURIComponent(e.PGUSER ?? "motor")}:${encodeURIComponent(e.PGPASSWORD ?? "")}@${e.PGHOST}:${e.PGPORT ?? "5432"}/${e.PGDATABASE ?? "motor"}` : DEFAULT_DATABASE_URL);
+  const client = new pg.Client({ connectionString: url });
   await client.connect();
   try {
     await client.query("select pg_advisory_lock(hashtext('sdc-motor:migrate'))");

@@ -5,7 +5,7 @@ import { fromStatesFor } from "../charges.js";
 import { ASAAS_EVENT_BATCH } from "../limits.js";
 import type { Deps } from "../ports.js";
 import { isTransient } from "../ports.js";
-import { findChargeForPayment, receivePayment } from "../receive.js";
+import { RECEIVED_STATUSES, findChargeForPayment, receivePayment } from "../receive.js";
 import type { AsaasPayment, ProcessStatus } from "../types.js";
 import { backoff } from "./retry.js";
 
@@ -70,10 +70,15 @@ async function applyEvent(deps: Deps, payload: unknown, storedId: number): Promi
       }
       return "done";
     }
-    case "PAYMENT_DELETED":
+    case "PAYMENT_DELETED": {
+      if (!charge) return "ignored";
+      if (!p.deleted) { deps.log("PAYMENT_DELETED de cobrança viva no Asaas — ignorado", { asaasPaymentId: p.id }); return "ignored"; }   // replay/forjado: o objeto vivo manda
+      await repo.charges.transition(charge.id, fromStatesFor("cancelled"), "cancelled");
+      return "done";
+    }
     case "PAYMENT_BANK_SLIP_CANCELLED": {
       if (!charge) return "ignored";
-      if (p.deleted || p.status !== "RECEIVED") await repo.charges.transition(charge.id, fromStatesFor("cancelled"), "cancelled");
+      if (!(RECEIVED_STATUSES as readonly string[]).includes(p.status)) await repo.charges.transition(charge.id, fromStatesFor("cancelled"), "cancelled");
       return "done";
     }
     case "PAYMENT_RESTORED": {

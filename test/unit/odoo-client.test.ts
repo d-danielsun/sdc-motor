@@ -27,26 +27,32 @@ describe("OdooJson2Client desconfiado", () => {
     let sent: any;
     const c = client([(_u, body) => { sent = body; return res(200, JSON.stringify([{ id: 5, name: "INV/5", partner_id: [10, "X"], state: "posted", payment_state: "not_paid", move_type: "out_invoice", amount_residual: 10, write_date: "2026-09-09 13:00:00" }])); }]);
     const out = await c.searchInvoices({ after: { writeDate: "2026-09-09T12:00:00.000Z", id: 4 }, limit: 50 });
-    expect(sent.domain).toEqual([["move_type", "=", "out_invoice"], ["state", "in", ["posted", "cancel", "draft"]], "|", ["write_date", ">", "2026-09-09 12:00:00"], "&", ["write_date", "=", "2026-09-09 12:00:00"], ["id", ">", 4]]);
+    expect(sent.domain).toEqual([["move_type", "=", "out_invoice"], ["state", "in", ["posted", "cancel", "draft"]], "|", ["write_date", ">=", "2026-09-09 12:00:01"], "&", ["write_date", ">=", "2026-09-09 12:00:00"], ["id", ">", 4]]);
     expect(sent.order).toBe("write_date asc, id asc"); expect(sent.limit).toBe(50);
     expect(out[0]).toMatchObject({ id: 5, partnerId: 10, writeDate: "2026-09-09T13:00:00.000Z", amountResidual: "10.00" });
   });
-  it("registerPayment: confirma pelo residual antes×depois; residual que não caiu → 409 não-transiente", async () => {
+  it("registerPayment: chave de idempotência (memo) + confirmação pelo residual antes×depois", async () => {
+    const noStray = () => res(200, "[]");
     const ok = client([
-      () => line(100),                                                     // antes
+      () => line(100), noStray,                                             // antes + busca por memo
       () => res(200, "[7]"),                                               // create → wizard 7
       () => res(200, JSON.stringify({ type: "ir.actions.act_window", res_id: 55 })),
       () => line(0, true),                                                 // depois: conciliada
       () => res(200, JSON.stringify([{ id: 100, payment_state: "in_payment" }])),
     ]);
-    expect(await ok.registerPayment({ moveLineId: 1001, amount: "100.00", paymentDate: "2026-09-10" })).toEqual({ paymentId: 55, paymentState: "in_payment" });
-    const parcial = client([() => line(200), () => res(200, "[8]"), () => res(200, "{}"), () => line(100), () => res(200, JSON.stringify([{ id: 100, payment_state: "partial" }]))]);
-    expect(await parcial.registerPayment({ moveLineId: 1001, amount: "100.00", paymentDate: "2026-09-10" })).toEqual({ paymentId: null, paymentState: "partial" });   // caiu 100 de 200: aplicado
-    const naoCaiu = client([() => line(100), () => res(200, "[9]"), () => res(200, "{}"), () => line(100)]);
-    const err = await naoCaiu.registerPayment({ moveLineId: 1001, amount: "100.00", paymentDate: "2026-09-10" }).catch((e) => e as HttpError);
-    expect(err).toBeInstanceOf(HttpError); expect((err as HttpError).status).toBe(409); expect((err as HttpError).transient).toBe(false);
-    expect(String(err)).toMatch(/baixa NÃO confirmada/);
-    await expect(client([() => line(100), () => res(200, JSON.stringify({ id: "x" }))]).registerPayment({ moveLineId: 1001, amount: "100.00", paymentDate: "2026-09-10" })).rejects.toThrow(/id numérico/);
+    expect(await ok.registerPayment({ moveLineId: 1001, amount: "100.00", paymentDate: "2026-09-10", ref: "asaas:pay_1" })).toEqual({ paymentId: 55, paymentState: "in_payment" });
+    const parcial = client([() => line(200), noStray, () => res(200, "[8]"), () => res(200, "{}"), noStray, () => line(100), () => res(200, JSON.stringify([{ id: 100, payment_state: "partial" }]))]);
+    expect(await parcial.registerPayment({ moveLineId: 1001, amount: "100.00", paymentDate: "2026-09-10", ref: "asaas:pay_1" })).toEqual({ paymentId: null, paymentState: "partial" });   // caiu 100 de 200: aplicado
+    const naoCaiu = client([() => line(100), noStray, () => res(200, "[9]"), () => res(200, JSON.stringify({ res_id: 77 })), () => line(100)]);
+    const err = await naoCaiu.registerPayment({ moveLineId: 1001, amount: "100.00", paymentDate: "2026-09-10", ref: "asaas:pay_1" }).catch((e) => e as HttpError);
+    expect((err as HttpError).status).toBe(409); expect((err as HttpError).transient).toBe(false);
+    expect(String(err)).toMatch(/pagamento #77/); expect((err as HttpError).body).toMatchObject({ paymentId: 77 });   // o humano vê o pagamento avulso
+    // retry depois de timeout: o pagamento já existe com a ref → adota se a parcela fechou, recusa se não
+    const adota = client([() => line(0, true), () => res(200, JSON.stringify([{ id: 88, state: "posted" }]))]);
+    expect(await adota.registerPayment({ moveLineId: 1001, amount: "100.00", paymentDate: "2026-09-10", ref: "asaas:pay_1" })).toEqual({ paymentId: 88, paymentState: null });
+    const recusa = client([() => line(100), () => res(200, JSON.stringify([{ id: 88, state: "posted" }]))]);
+    await expect(recusa.registerPayment({ moveLineId: 1001, amount: "100.00", paymentDate: "2026-09-10", ref: "asaas:pay_1" })).rejects.toThrow(/já existe o pagamento #88/);
+    await expect(client([() => line(100), noStray, () => res(200, JSON.stringify({ id: "x" }))]).registerPayment({ moveLineId: 1001, amount: "100.00", paymentDate: "2026-09-10", ref: "r" })).rejects.toThrow(/id numérico/);
   });
   it("erro 401 do Odoo é definitivo (não transiente); 500 é transiente", () => {
     expect(new HttpError("odoo", 401, {}).transient).toBe(false);

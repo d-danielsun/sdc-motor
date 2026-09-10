@@ -92,7 +92,7 @@ async function receiveLocked(deps: Deps, p: AsaasPayment, externalRef: string, s
 
   let result;
   try {
-    result = await odoo.registerPayment({ moveLineId: charge.odooMoveLineId, amount: p.value, paymentDate });
+    result = await odoo.registerPayment({ moveLineId: charge.odooMoveLineId, amount: p.value, paymentDate, ref: `asaas:${p.id}` });
   } catch (e) {
     if (isTransient(e)) throw e;   // rede/5xx: quem chamou re-tenta
     // Definitivo (ex.: wizard rodou mas a parcela não fechou): NÃO re-tentar às cegas — pode duplicar. Fica pra uma pessoa.

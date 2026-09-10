@@ -34,18 +34,29 @@ export async function runJob(deps: Deps, name: JobName): Promise<unknown> {
 
 export const DAILY_HOUR_UTC = 9;   // 06:00 BRT
 
+/** Um job nunca sobrepõe a si mesmo — vale pro scheduler em processo E pro POST /api/v1/jobs/:name (cron do Supabase). */
+export interface JobRunner { run(name: JobName): Promise<unknown>; inFlight(): JobName[]; isJob(name: string): name is JobName }
+export function createJobRunner(deps: Deps): JobRunner {
+  const running = new Map<JobName, Promise<unknown>>();
+  return {
+    run(name) {
+      const current = running.get(name);
+      if (current) return current;
+      const p = runJob(deps, name).finally(() => running.delete(name));
+      running.set(name, p);
+      return p;
+    },
+    inFlight: () => [...running.keys()],
+    isJob: (name): name is JobName => name in JOBS,
+  };
+}
+
 export interface Scheduler { stop(): Promise<void>; tick(): Promise<void>; inFlight(): JobName[] }
 
-export function startScheduler(deps: Deps, o: { setInterval?: typeof setInterval; clearInterval?: typeof clearInterval } = {}): Scheduler {
+export function startScheduler(deps: Deps, o: { setInterval?: typeof setInterval; clearInterval?: typeof clearInterval; runner?: JobRunner } = {}): Scheduler {
   const si = o.setInterval ?? setInterval, ci = o.clearInterval ?? clearInterval;
-  const running = new Map<JobName, Promise<unknown>>();
-  const run = (name: JobName): Promise<unknown> => {
-    const current = running.get(name);
-    if (current) return current;   // ainda rodando: não sobrepõe (review 09/09)
-    const p = runJob(deps, name).finally(() => running.delete(name));
-    running.set(name, p);
-    return p;
-  };
+  const runner = o.runner ?? createJobRunner(deps);
+  const run = (name: JobName) => runner.run(name);
   const dailyDue = async (): Promise<boolean> => {
     const now = deps.clock.now();
     if (now.getUTCHours() < DAILY_HOUR_UTC) return false;
@@ -62,7 +73,7 @@ export function startScheduler(deps: Deps, o: { setInterval?: typeof setInterval
   void run("worker");
   return {
     tick,
-    inFlight: () => [...running.keys()],
-    stop: async () => { timers.forEach(ci); await Promise.allSettled([...running.values()]); },   // deploy espera o que está no meio
+    inFlight: () => runner.inFlight(),
+    stop: async () => { timers.forEach(ci); while (runner.inFlight().length) await new Promise((r) => setTimeout(r, 200)); },   // deploy espera o que está no meio
   };
 }

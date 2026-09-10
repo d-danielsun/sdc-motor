@@ -31,7 +31,7 @@ export async function ensureCustomer(deps: Deps, odooPartnerId: number): Promise
     }
     const ref = externalRefForPartner(odooPartnerId);
     const notificationsEnabled = (await repo.config.get<boolean>("NOTIFICATIONS_ENABLED")) === true;
-    const found = await asaas.findCustomerByExternalRef(ref);
+    const found = (await asaas.findCustomerByExternalRef(ref)) ?? (await asaas.findCustomerByDocument(cpfCnpj));   // a SDC já usa este Asaas: não duplicar cliente
     const customer = found ?? (await asaas.createCustomer({ name: partner.name, cpfCnpj, email: partner.email, phone: partner.phone, externalReference: ref, notificationDisabled: !notificationsEnabled }));
     return repo.customers.upsert({ ...base, asaasCustomerId: customer.id, syncStatus: "synced" });
   });

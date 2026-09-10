@@ -15,7 +15,7 @@ scripts/with-op.sh npm run test:sandbox    # vivo contra o sandbox do Asaas (key
 scripts/with-op.sh npm run dev             # API em :8787 (/health, /webhook-asaas, /webhook-odoo?k=, /api/v1)
 ```
 
-Container completo (AC14 — a prova de que não depende do Supabase): `docker compose --profile motor up --build` sobe Postgres → `migrate` (aplica `db/migrations`) → `motor`. Fora do laptop, defina `POSTGRES_PASSWORD` e os tokens por env.
+Container completo (AC14 — a prova de que não depende do Supabase): `docker compose --profile motor up --build` sobe Postgres → `migrate` (aplica `db/migrations`) → `motor` (com `restart`, `healthcheck` e 70 s de graça no stop). Fora do laptop, defina `POSTGRES_PASSWORD` e os tokens por env. O banco pode vir por `DATABASE_URL` ou por `PGHOST/PGUSER/PGPASSWORD/PGDATABASE/PGPORT` (senha com `@ / # %` não quebra). **Conexão de sessão obrigatória** (Supabase `:5432`, não o pooler `:6543`): os advisory locks não sobrevivem a pooler em modo transação — o motor avisa no boot.
 
 ## Layout
 
@@ -30,7 +30,9 @@ Container completo (AC14 — a prova de que não depende do Supabase): `docker c
 ## Invariantes que o código defende (e os testes fixam)
 
 - **Baixa só com prova:** o pagamento é relido no Asaas (o webhook é gatilho, não verdade — ele não é assinado), a parcela é lida por id no Odoo, o residual tem que bater com a cobrança, e o wizard só conta se o residual caiu no valor pago. Parcela sumida, residual diferente ou wizard sem efeito viram exceção, nunca "recebido".
-- **Nada em dobro:** lock por cobrança e por fatura (advisory lock do Postgres), `unique(reconciliations.charge_id)`, `unique(charges.odoo_move_line_id)`, boleto existente adotado por `externalReference` antes de criar, eventos reservados com `SKIP LOCKED`.
+- **Nada em dobro:** lock por cobrança, fatura e parceiro (advisory lock do Postgres num pool próprio), `unique(reconciliations.charge_id)`, `unique(charges.odoo_move_line_id)`, boleto existente adotado por `externalReference` (e cliente por CPF/CNPJ) antes de criar, chave de idempotência no wizard do Odoo (`memo = asaas:<pay_id>` — pagamento avulso é adotado ou recusado, nunca duplicado), eventos reservados com `SKIP LOCKED`.
+- **Sem data de corte, nada sai:** `IDA_ENABLED=true` é recusado enquanto `GO_LIVE_CUTOFF_DATE` for nula — senão a primeira varredura emitiria boleto pro histórico inteiro do Odoo.
+- **A varredura não trava:** o watermark é um balde de 1 s (o Odoo devolve `write_date` truncado; 200+ faturas confirmadas no mesmo segundo são drenadas por id); uma fatura que o Odoo recusa 3 varreduras seguidas vira exceção com o id e a fila anda.
 - **Nada em silêncio:** falha definitiva de evento ou de job vira exceção reprocessável; `IDA_ENABLED` é o kill switch de toda emissão; boot recusa banco sem migração.
 
 ## API do console (`/api/v1`, `Authorization: Bearer $CONSOLE_TOKEN`)
@@ -44,6 +46,7 @@ Container completo (AC14 — a prova de que não depende do Supabase): `docker c
 | `GET /health-report` | kill switch, régua, abertas, exceções por tipo, último evento/varredura/reconcile/watchdog, fila do Asaas, idade da key |
 | `GET /config` · `PUT /config/:key {value}` | `IDA_ENABLED` (gate R1), `TOLERANCE_BRL` (≤100), `GO_LIVE_CUTOFF_DATE`, `JUROS_MULTA_AUTO`, `RECONCILE_LOOKBACK_DAYS` (1–30) |
 | `POST /customers/enable-notifications` | gate R3: liga a régua nos clientes existentes e como política pros próximos |
+| `POST /jobs/:name` | pro cron externo (Supabase): roda `worker`, `sync-invoices`, `reconcile-daily` ou `watchdog` com o mesmo guard de não-sobreposição; 502 se o job falhou |
 
 Listas devolvem `{ data, total, limit, offset }` (`limit` 1–200, default 50). Erros devolvem sempre `{ ok:false, code, error }` com `code` ∈ `invalid_input` 400 · `unauthorized` 401 · `not_found` 404 · `invalid_state`/`busy` 409 · `upstream` 502 · `config`/`internal` 500. O header `x-user` vira `resolved_by` — é **asserção do cliente**; identidade forte vem com o JWT do Supabase Auth (issue #1).
 

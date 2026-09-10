@@ -5,9 +5,9 @@ import { OdooJson2Client } from "../../src/adapters/odoo/client.js";
 import { CLAIM_TTL_MINUTES } from "../../src/adapters/db/repo.js";
 import { runJob, startScheduler } from "../../src/app/scheduler.js";
 import { safeEqual } from "../../src/app/server.js";
-import { processAsaasEvents, syncInvoices } from "../../src/core/index.js";
+import { processAsaasEvents, processOdooEvents, reconcileDaily, syncInvoices } from "../../src/core/index.js";
 import { reprocessException } from "../../src/core/usecases/console.js";
-import { dbReachable, json, seedInvoice, world, type World } from "../helpers.js";
+import { CNPJ_OK, CPF_OK, KEY, dbReachable, json, seedInvoice, world, type World } from "../helpers.js";
 
 const opened: World[] = [];
 async function fresh(o: Parameters<typeof world>[0] = {}): Promise<World> { const w = await world(o); opened.push(w); return w; }
@@ -47,7 +47,6 @@ describe("U1 — Odoo devolvendo HTML/303 nunca vira baixa", () => {
     expect(await processAsaasEvents(w.deps)).toMatchObject({ errors: 1 });
     expect((await w.deps.repo.charges.getByMoveLine(1001))!.status).toBe("exception");
     expect((await w.pool.query("select count(*)::int as n from exceptions where status='open'")).rows[0].n).toBe(1);
-    const { reconcileDaily } = await import("../../src/core/index.js");
     delete (w.odoo as { registerPayment?: unknown }).registerPayment;   // volta ao método real do fake (w.deps.odoo é o próprio fake)
     expect(await reconcileDaily(w.deps)).toMatchObject({ needsReview: 1, received: 0 });
     expect(w.odoo.payments).toHaveLength(0);
@@ -127,6 +126,104 @@ describe("U6 — a fonte de verdade é a parcela no Odoo", () => {
   });
 });
 
+describe("U6b — vínculo em conflito e isolamento de falha na rede de segurança", () => {
+  it("id do pagamento e externalReference apontando para cobranças diferentes → exceção, zero baixa", async () => {
+    const w = await fresh(); seedInvoice(w); await syncInvoices(w.deps);
+    const p2 = [...w.asaas.payments.values()][1]!;
+    w.asaas.confirm(p2.id);
+    w.asaas.payments.get(p2.id)!.externalReference = "odoo:move_line:1001";   // referência editada no Asaas aponta pra outra parcela
+    await w.deps.repo.asaasEvents.insert({ asaasEventId: "cf1", eventType: "PAYMENT_RECEIVED", asaasPaymentId: p2.id, payload: w.asaas.event("PAYMENT_RECEIVED", w.asaas.payments.get(p2.id)!) });
+    expect(await processAsaasEvents(w.deps)).toMatchObject({ errors: 1, done: 0 });
+    expect(w.odoo.payments).toHaveLength(0);
+    expect((await w.pool.query("select detail from exceptions where type='payment_unmatched' and ref_table='asaas_payments'")).rows[0].detail).toMatchObject({ reason: expect.stringContaining("cobranças diferentes"), asaasPaymentId: p2.id });
+    expect((await w.deps.repo.charges.getByMoveLine(1001))!.status).toBe("created");
+    expect((await w.deps.repo.charges.getByMoveLine(1002))!.status).toBe("created");
+  });
+  it("reconcile-daily: um pagamento que explode não derruba a varredura (conta em errors, o outro baixa)", async () => {
+    const w = await fresh(); seedInvoice(w); await syncInvoices(w.deps);
+    const [p1, p2] = [...w.asaas.payments.values()];
+    w.asaas.confirm(p1!.id); w.asaas.confirm(p2!.id);
+    const real = w.odoo.registerPayment.bind(w.odoo);
+    w.deps.odoo.registerPayment = async (p) => { if (p.moveLineId === 1001) throw Object.assign(new Error("odoo 503"), { transient: true }); return real(p); };
+    const s = await reconcileDaily(w.deps);
+    delete (w.odoo as { registerPayment?: unknown }).registerPayment;
+    expect(s).toMatchObject({ ok: true, scanned: 2, received: 1, errors: 1 });
+    expect(w.odoo.payments.map((x) => x.moveLineId)).toEqual([1002]);
+    expect((await w.deps.repo.charges.getByMoveLine(1001))!.status).toBe("created");
+    expect((await w.deps.repo.config.get<{ ok: boolean }>("RECONCILE_LAST"))?.ok).toBe(true);
+  });
+});
+
+describe("retenção — o purge só apaga o que já foi processado", () => {
+  it("reconcile-daily purga trilha e eventos done/ignored antigos, e NUNCA um evento em 'error'", async () => {
+    const w = await fresh();
+    await w.deps.repo.audit.log({ direction: "asaas_out", endpoint: "GET /payments/:id", responseStatus: 200, durationMs: 12 });
+    await w.deps.repo.audit.log({ direction: "odoo_out", endpoint: "account.move.search_read", responseStatus: 200 });
+    const done = (await w.deps.repo.asaasEvents.insert({ asaasEventId: "velho-done", eventType: "PAYMENT_OVERDUE", asaasPaymentId: "pay_o", payload: {} }))!;
+    const err = (await w.deps.repo.asaasEvents.insert({ asaasEventId: "velho-error", eventType: "PAYMENT_RECEIVED", asaasPaymentId: "pay_e", payload: {} }))!;
+    await w.deps.repo.asaasEvents.mark(done, "done");
+    await w.deps.repo.asaasEvents.mark(err, "error", { error: "o Odoo estava fora" });
+    await w.deps.repo.odooEvents.mark(await w.deps.repo.odooEvents.insert({ odooModel: "res.partner", odooId: 10, odooAction: null, payload: {} }), "ignored");
+    await w.pool.query("update audit_log set created_at = now() - interval '200 days' where endpoint like 'GET%'");
+    await w.pool.query("update webhook_events set processed_at = now() - interval '200 days'");
+    await w.pool.query("update odoo_events set processed_at = now() - interval '200 days'");
+    expect(await runJob(w.deps, "reconcile-daily")).toMatchObject({ ok: true, purged: { audit: 1, asaasEvents: 1, odooEvents: 1 } });
+    expect((await w.pool.query("select asaas_event_id from webhook_events")).rows.map((r) => r.asaas_event_id)).toEqual(["velho-error"]);
+    expect((await w.pool.query("select count(*)::int as n from audit_log")).rows[0].n).toBe(1);   // a trilha recente fica
+  });
+});
+
+describe("push do Odoo — kill switch na entrada e falha no worker", () => {
+  it("webhook-odoo com a ida desligada (ou outro modelo) grava 'ignored' — o worker nem relê a fatura", async () => {
+    const w = await fresh({ idaEnabled: false }); seedInvoice(w);
+    expect((await w.app().request(`/webhook-odoo?k=${KEY}`, json({ _model: "account.move", _id: 100 }))).status).toBe(200);
+    expect((await w.pool.query("select process_status from odoo_events")).rows[0].process_status).toBe("ignored");
+    expect(await processOdooEvents(w.deps)).toMatchObject({ done: 0, ignored: 0, errors: 0 });
+    expect(w.asaas.payments.size).toBe(0);
+    const w2 = await fresh(); seedInvoice(w2);
+    await w2.app().request(`/webhook-odoo?k=${KEY}`, json({ _model: "res.partner", _id: 10 }));
+    expect((await w2.pool.query("select process_status from odoo_events")).rows[0].process_status).toBe("ignored");
+  });
+  it("processOdooEvents: transiente volta pra fila; definitivo → 'error' + charge_create_failed que o console reenfileira", async () => {
+    const w = await fresh(); seedInvoice(w);
+    w.deps.odoo.getInvoice = async () => { throw Object.assign(new Error("odoo 503"), { transient: true }); };
+    const id = await w.deps.repo.odooEvents.insert({ odooModel: "account.move", odooId: 100, odooAction: null, payload: {} });
+    expect(await processOdooEvents(w.deps)).toMatchObject({ done: 0, errors: 0 });
+    expect((await w.pool.query("select process_status, attempts, next_attempt_at from odoo_events where id=$1", [id])).rows[0]).toMatchObject({ process_status: "pending", attempts: 1, next_attempt_at: expect.any(Date) });
+    w.deps.odoo.getInvoice = async () => { throw new Error("odoo: 401 api key revogada"); };
+    await w.pool.query("update odoo_events set next_attempt_at=null where id=$1", [id]);
+    expect(await processOdooEvents(w.deps)).toMatchObject({ errors: 1 });
+    expect((await w.pool.query("select process_status from odoo_events where id=$1", [id])).rows[0].process_status).toBe("error");
+    const exId = (await w.pool.query("select id from exceptions where type='charge_create_failed' and ref_table='odoo_events'")).rows[0].id;
+    delete (w.odoo as { getInvoice?: unknown }).getInvoice;
+    expect(await reprocessException(w.deps, exId, "dan")).toMatchObject({ ok: true, action: "odoo_event_requeued" });
+    expect(await processOdooEvents(w.deps)).toMatchObject({ done: 1 });
+    expect(w.asaas.payments.size).toBe(2);
+  });
+});
+
+describe("cancelamento não apaga boleto que o cliente já pagou", () => {
+  it("fatura cancelada com boleto CONFIRMED no Asaas → reversal_pending e o boleto fica de pé", async () => {
+    const w = await fresh(); seedInvoice(w); await syncInvoices(w.deps);
+    const [p1, p2] = [...w.asaas.payments.values()];
+    w.asaas.setStatus(p1!.id, "CONFIRMED");
+    w.odoo.cancelInvoice(100);
+    expect(await syncInvoices(w.deps)).toMatchObject({ cancelled: 1, failed: 0 });   // só a parcela 2
+    expect(w.asaas.deleted).toEqual([p2!.id]);
+    expect((await w.asaas.getPayment(p1!.id))!.deleted).toBe(false);
+    expect((await w.deps.repo.charges.getByMoveLine(1001))!.status).toBe("created");
+    expect((await w.pool.query("select detail from exceptions where type='reversal_pending'")).rows[0].detail).toMatchObject({ reason: expect.stringContaining("CONFIRMED") });
+  });
+  it("Asaas recusa o DELETE (definitivo) → charge_create_failed no cancelamento, a varredura segue", async () => {
+    const w = await fresh(); seedInvoice(w); await syncInvoices(w.deps);
+    w.asaas.deletePayment = async () => { throw new Error("invalid_action: cobrança não pode ser removida"); };
+    w.odoo.cancelInvoice(100);
+    expect(await syncInvoices(w.deps)).toMatchObject({ cancelled: 0, failed: 2 });
+    expect((await w.pool.query("select detail from exceptions where type='charge_create_failed'")).rows[0].detail).toMatchObject({ stage: "cancelamento", invoice: "INV/2026/0001" });
+    expect((await w.deps.repo.charges.getByMoveLine(1001))!.status).toBe("created");
+  });
+});
+
 describe("U8 — dois workers no mesmo tick", () => {
   it("claim com SKIP LOCKED nas duas filas: nunca o mesmo evento; reserva abandonada expira; touch renova", async () => {
     const w = await fresh();
@@ -155,6 +252,71 @@ describe("U8 — dois workers no mesmo tick", () => {
     await sched.tick();                            // já rodou hoje: não roda de novo
     expect(calls).toBe(2);
     await sched.stop();
+  });
+});
+
+describe("Red team — o que ficou depois do primeiro lote", () => {
+  it("varredura: 201 faturas no mesmo segundo são drenadas por id e o watermark passa do balde", async () => {
+    const w = await fresh(); w.odoo.addPartner({ id: 10, name: "X", vat: CPF_OK });
+    for (let i = 1; i <= 201; i++) w.odoo.addInvoice({ id: 1000 + i, name: `INV/${i}`, partnerId: 10, writeDate: "2026-09-09 12:00:05", lines: [{ id: 10_000 + i, dateMaturity: "2026-09-20", amount: "1.00" }] });
+    w.odoo.addInvoice({ id: 2000, name: "INV/depois", partnerId: 10, writeDate: "2026-09-09 12:00:09", lines: [{ id: 20_000, dateMaturity: "2026-09-20", amount: "1.00" }] });
+    const s = await syncInvoices(w.deps, { pageSize: 50 });
+    expect(s).toMatchObject({ invoices: 202, created: 202 });
+    expect(s.watermark).toEqual({ writeDate: "2026-09-09T12:00:09.000Z", id: 2000 });
+    expect((await syncInvoices(w.deps, { pageSize: 50 })).invoices).toBe(0);   // nada re-lido: o balde não gira em círculo
+  });
+  it("varredura: fatura que o Odoo recusa (5xx) 3 ticks seguidos vira exceção com o id e a varredura segue", async () => {
+    const w = await fresh(); w.odoo.addPartner({ id: 10, name: "X", vat: CPF_OK });
+    w.odoo.addInvoice({ id: 1, name: "INV/ruim", partnerId: 10, writeDate: "2026-09-09 12:00:01", lines: [{ id: 11, dateMaturity: "2026-09-20", amount: "1.00" }] });
+    w.odoo.addInvoice({ id: 2, name: "INV/boa", partnerId: 10, writeDate: "2026-09-09 12:00:02", lines: [{ id: 21, dateMaturity: "2026-09-20", amount: "1.00" }] });
+    const orig = w.odoo.getPaymentTermLines.bind(w.odoo);
+    w.odoo.getPaymentTermLines = async (id) => { if (id === 1) throw Object.assign(new Error("odoo HTTP 500: MissingError"), { transient: true }); return orig(id); };
+    await expect(syncInvoices(w.deps)).rejects.toThrow(/INV\/ruim.*tentativa 1/);
+    await expect(syncInvoices(w.deps)).rejects.toThrow(/tentativa 2/);
+    expect(await w.deps.repo.watermarks.get("invoices")).toBeNull();
+    const s = await syncInvoices(w.deps);
+    expect(s).toMatchObject({ skippedBad: 1, created: 1 });
+    expect((await w.pool.query("select detail from exceptions where type='charge_create_failed' and ref_table='account.move' and ref_id=1")).rows[0].detail).toMatchObject({ odooId: 1, invoice: "INV/ruim" });
+    delete (w.odoo as { getPaymentTermLines?: unknown }).getPaymentTermLines;
+  });
+  it("PAYMENT_DELETED de boleto vivo é ignorado; boleto adotado com valor diferente vira divergência; cliente existente no Asaas é adotado por CPF", async () => {
+    const { w, p1 } = await idaPronta();
+    await w.deps.repo.asaasEvents.insert({ asaasEventId: "d", eventType: "PAYMENT_DELETED", asaasPaymentId: p1.id, payload: w.asaas.event("PAYMENT_DELETED", p1) });   // o Asaas ainda tem o boleto vivo
+    expect(await processAsaasEvents(w.deps)).toMatchObject({ ignored: 1 });
+    expect((await w.deps.repo.charges.getByMoveLine(1001))!.status).toBe("created");
+    await w.pool.query("delete from charges where odoo_move_line_id=1002");
+    const p2 = [...w.asaas.payments.values()][1]!; w.asaas.setStatus(p2.id, "PENDING", { value: "150.00" });   // alguém mexeu no boleto
+    const { handleInvoice } = await import("../../src/core/usecases/handleInvoice.js");
+    expect(await handleInvoice(w.deps, (await w.odoo.getInvoice(100))!)).toMatchObject({ created: 0, failed: 1 });
+    expect(await w.deps.repo.exceptions.hasOpen("amount_divergent", "account.move.line", 1002)).toBe(true);
+    const w2 = await fresh();
+    await w2.asaas.createCustomer({ name: "Já existia", cpfCnpj: CNPJ_OK, externalReference: null as unknown as string, notificationDisabled: false });
+    seedInvoice(w2); await syncInvoices(w2.deps);
+    expect(w2.asaas.customers.size).toBe(1);
+  });
+  it("reconcile: janela ancorada no último sucesso e passe por cobranças vencidas; baixa manual com boleto pago fecha como ja_baixada", async () => {
+    const w = await fresh({ today: "2026-10-30" }); seedInvoice(w); await syncInvoices(w.deps);
+    const [p1, p2] = [...w.asaas.payments.values()];
+    w.asaas.confirm(p1!.id, { paymentDate: "2026-09-25" });                       // pago fora de qualquer janela de 3 dias, webhook perdido
+    await w.deps.repo.config.set("RECONCILE_LAST", { ok: true, at: "2026-09-27T09:00:00.000Z", from: "2026-09-24" });
+    const s = await reconcileDaily(w.deps);
+    expect(s.from).toBe("2026-09-24"); expect(s.received).toBe(1);           // janela cresceu até o último sucesso
+    w.asaas.confirm(p2!.id, { paymentDate: "2026-08-01" });                       // data retroativa: só o passe por cobrança vencida pega
+    const s2 = await reconcileDaily(w.deps);
+    expect(s2).toMatchObject({ overdueChecked: 1, received: 1 });
+    expect(w.odoo.payments).toHaveLength(2);
+    // baixa manual no Odoo com boleto já pago no Asaas: não é estorno, é conciliação
+    const w3 = await fresh(); seedInvoice(w3); await syncInvoices(w3.deps);
+    const q1 = [...w3.asaas.payments.values()][0]!; w3.asaas.confirm(q1.id);
+    await w3.odoo.registerPayment({ moveLineId: 1001, amount: "100.00", paymentDate: "2026-09-10" }); w3.odoo.invoices.get(100)!.writeDate = w3.odoo.stamp();
+    await syncInvoices(w3.deps);
+    expect((await w3.deps.repo.charges.getByMoveLine(1001))!.status).toBe("received");
+    expect(await w3.deps.repo.exceptions.hasOpen("reversal_pending")).toBe(false);
+  });
+  it("insert que viola outro unique (asaas_payment_id) lança em vez de sumir em silêncio", async () => {
+    const { w, p1 } = await idaPronta();
+    await expect(w.deps.repo.charges.insert({ odooMoveId: 9, odooMoveLineId: 9, odooPartnerId: 10, asaasPaymentId: p1.id, externalRef: "odoo:move_line:9", amount: "1.00", dueDate: "2026-09-20", status: "created", bankSlipUrl: null, invoiceName: null, nossoNumero: null, asaasInvoiceNumber: null })).rejects.toThrow(/asaas_payment_id/);
+    expect(await w.deps.repo.charges.insert({ odooMoveId: 100, odooMoveLineId: 1001, odooPartnerId: 10, asaasPaymentId: null, externalRef: "x", amount: "1.00", dueDate: "2026-09-20", status: "created", bankSlipUrl: null, invoiceName: null, nossoNumero: null, asaasInvoiceNumber: null })).toBeNull();
   });
 });
 

@@ -35,10 +35,11 @@ const touchSql = (table: string) => `update ${table} set locked_at=$2 where id=$
 const resetSql = (table: string) => `update ${table} set process_status='pending', attempts=0, next_attempt_at=null, error=null, processed_at=null, locked_at=null where id=$1`;
 const purgeSql = (table: string) => `delete from ${table} where process_status in ('done','ignored') and processed_at < now() - ($1 || ' days')::interval`;
 
-const isUniqueViolation = (e: unknown) => (e as { code?: string }).code === "23505";
+const isUniqueViolation = (e: unknown, constraint?: string) => (e as { code?: string; constraint?: string }).code === "23505" && (!constraint || (e as { constraint?: string }).constraint === constraint);
 const patchSql = `asaas_payment_id=coalesce($3, asaas_payment_id), bank_slip_url=coalesce($4, bank_slip_url), nosso_numero=coalesce($5, nosso_numero), asaas_invoice_number=coalesce($6, asaas_invoice_number), updated_at=now()`;
 
-export function createPgRepo(pool: pg.Pool): Repo {
+/** `lockPool`: conexões dedicadas aos advisory locks — quem segura lock (durante chamadas HTTP) nunca esgota o pool das consultas (red team). */
+export function createPgRepo(pool: pg.Pool, lockPool: pg.Pool = pool): Repo {
   const db = pool;
   const one = async <T = Row>(sql: string, params: unknown[] = []): Promise<T | null> => ((await db.query(sql, params)).rows[0] as T) ?? null;
   const all = async <T = Row>(sql: string, params: unknown[] = []): Promise<T[]> => (await db.query(sql, params)).rows as T[];
@@ -72,7 +73,7 @@ export function createPgRepo(pool: pg.Pool): Repo {
             [c.odooMoveId, c.odooMoveLineId, c.odooPartnerId, c.asaasPaymentId, c.externalRef, c.amount, c.dueDate, c.status, c.bankSlipUrl, c.invoiceName, c.nossoNumero, c.asaasInvoiceNumber]);
           return chargeRow(r!);
         } catch (e) {
-          if (isUniqueViolation(e)) return null;
+          if (isUniqueViolation(e, "charges_odoo_move_line_id_key")) return null;   // só a corrida na parcela é "silenciosa"; outro unique é bug/dado ruim
           throw e;
         }
       },
@@ -105,9 +106,10 @@ export function createPgRepo(pool: pg.Pool): Repo {
         }
       },
       async countOpen() { const r = await one<{ n: number }>("select count(*)::int as n from charges where status = any($1::text[])", [[...OPEN_STATUSES]]); return r?.n ?? 0; },
+      async listOpenDueBefore(date, limit) { return (await all("select * from charges where status = any($1::text[]) and due_date < $2::date and asaas_payment_id is not null order by due_date, id limit $3", [[...OPEN_STATUSES], date, limit])).map(chargeRow); },
     },
     async withLock(key, fn) {
-      const client = await pool.connect();
+      const client = await lockPool.connect();
       try {
         const got = await client.query<{ ok: boolean }>("select pg_try_advisory_lock(hashtext($1)) as ok", [key]);
         if (!got.rows[0]?.ok) return { ok: false, busy: true };

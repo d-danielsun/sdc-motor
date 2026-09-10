@@ -5,6 +5,7 @@ import { FakeOdoo } from "../src/adapters/fakes/fakeOdoo.js";
 import { fixedClock } from "../src/adapters/clock.js";
 import { createServer } from "../src/app/server.js";
 import { createConsoleApi } from "../src/app/console.js";
+import { createJobRunner } from "../src/app/scheduler.js";
 import { createConsoleQueries } from "../src/adapters/db/console.js";
 import { CONFIG_KEYS } from "../src/core/console.js";
 import type { Deps } from "../src/core/ports.js";
@@ -31,17 +32,18 @@ export interface World {
 }
 
 /** Mundo limpo: tabelas truncadas, app_config no default do registro (com IDA ligada, salvo pedido contrário). */
-export async function world(o: { today?: string; idaEnabled?: boolean } = {}): Promise<World> {
+export async function world(o: { today?: string; idaEnabled?: boolean; cutoff?: string | null } = {}): Promise<World> {
   const pool = createPool(DB_URL);
   await pool.query(`truncate ${TABLES.join(", ")} restart identity cascade`);
   await pool.query("delete from app_config");
-  for (const [k, v] of Object.entries(CONFIG_KEYS)) await pool.query("insert into app_config (key, value) values ($1, $2::jsonb)", [k, JSON.stringify(k === "IDA_ENABLED" ? (o.idaEnabled ?? true) : v)]);
+  const overrides: Record<string, unknown> = { IDA_ENABLED: o.idaEnabled ?? true, GO_LIVE_CUTOFF_DATE: o.cutoff === undefined ? "2026-01-01" : o.cutoff };   // sem data de corte nada é emitido
+  for (const [k, v] of Object.entries(CONFIG_KEYS)) await pool.query("insert into app_config (key, value) values ($1, $2::jsonb)", [k, JSON.stringify(k in overrides ? overrides[k] : v)]);
   const repo = createPgRepo(pool);
   const odoo = new FakeOdoo();
   const asaas = new FakeAsaas();
   const logs: World["logs"] = [];
   const deps: Deps = { repo, odoo, asaas, clock: fixedClock(`${o.today ?? "2026-09-10"}T13:00:00.000Z`), log: (msg, ctx) => logs.push({ msg, ctx }) };
-  const consoleApi = createConsoleApi({ deps, queries: createConsoleQueries(pool), token: CONSOLE_TOKEN });
+  const consoleApi = createConsoleApi({ deps, queries: createConsoleQueries(pool), token: CONSOLE_TOKEN, jobs: createJobRunner(deps) });
   const app = () => createServer({ repo, asaasWebhookToken: TOKEN, odooWebhookKey: KEY, log: () => {}, console: consoleApi });
   const api: World["api"] = async (path, init = {}, token = CONSOLE_TOKEN) => {
     const res = await app().request(`/api/v1${path}`, { ...init, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-user": "dan", ...(init.headers ?? {}) } });

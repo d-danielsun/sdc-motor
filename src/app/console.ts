@@ -9,7 +9,8 @@ import type { ChargeStatus, ExceptionType } from "../core/types.js";
 import { acceptWriteoff, enableCustomerNotifications, healthReport, isIsoDate, reprocessException, resolveException, setConsoleConfig } from "../core/usecases/console.js";
 import { safeEqual } from "./server.js";
 
-export interface ConsoleDeps { deps: Deps; queries: ConsoleQueries; token: string | null }
+import type { JobRunner } from "./scheduler.js";
+export interface ConsoleDeps { deps: Deps; queries: ConsoleQueries; token: string | null; jobs?: JobRunner }
 
 const STATUS_BY_CODE: Record<ErrorCode | "internal" | "unauthorized", number> = { not_found: 404, invalid_state: 409, invalid_input: 400, upstream: 502, config: 500, busy: 409, internal: 500, unauthorized: 401 };
 const EXC_STATUSES = ["open", "resolved", "ignored"] as const;
@@ -84,5 +85,12 @@ export function createConsoleApi(cd: ConsoleDeps): Hono {
   });
   api.put("/config/:key", async (c) => send(c, await setConsoleConfig(cd.deps, c.req.param("key"), (await jsonObject(c)).value)));
   api.post("/customers/enable-notifications", async (c) => send(c, await enableCustomerNotifications(cd.deps)));
+  // Cron externo (Supabase) chama aqui; mesmo guard de não-sobreposição do scheduler em processo.
+  api.post("/jobs/:name", async (c) => {
+    const name = c.req.param("name");
+    if (!cd.jobs || !cd.jobs.isJob(name)) return c.json({ ok: false, code: "not_found", error: "job desconhecido" }, 404);
+    const result = await cd.jobs.run(name);
+    return c.json({ ok: result !== null, action: `job:${name}`, detail: result }, result !== null ? 200 : 502);
+  });
   return api;
 }
