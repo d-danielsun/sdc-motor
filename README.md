@@ -54,6 +54,50 @@ Listas devolvem `{ data, total, limit, offset }` (`limit` 1–200, default 50). 
 
 `worker` (1 min: eventos do Odoo e do Asaas, lotes de 20) · `sync-invoices` (15 min, varredura de segurança da ida, páginas de 200) · `reconcile-daily` (06:00 BRT, relê RECEIVED e RECEIVED_IN_CASH dos últimos `RECONCILE_LOOKBACK_DAYS`, e apaga `audit_log`/eventos processados > 90 dias) · `watchdog` (15 min: fila interrompida, penalidades, silêncio, idade da key). Um job nunca sobrepõe a si mesmo. Uma vez por ambiente: `WEBHOOK_PUBLIC_URL=… ALERT_EMAIL=… npm run job -- register-asaas-webhook`.
 
+## Console
+
+Interface em `/console/`, servida pelo próprio motor. Sem framework e sem bundler: três
+arquivos estáticos que conversam com a `/api/v1`, a mesma regra do `salvei/site`.
+
+Quatro telas. **Exceções** é a fila de trabalho, com filtro por status e tipo, o `detail`
+renderizado legível e os botões resolver, ignorar, reprocessar e aceitar diferença.
+**Cobranças** tem filtro por status, vencimento e busca, link do boleto e o detalhe com
+conciliação, eventos do Asaas e histórico. **Saúde** mostra o `health-report` em cartões, com
+o aging ao lado. **Configuração** edita os cinco valores que o console pode mudar.
+
+A interface não inventa contrato. Cada botão chama exatamente uma rota que já existe, mostra o
+`action` no sucesso e o `error` do envelope no erro, e recarrega a lista afetada. Um teste
+compara as chamadas do `app.js` com as rotas declaradas em `src/app/console.ts` e falha se
+divergirem. Nenhum dado do servidor entra por `innerHTML`, porque nome de cliente vem do Odoo.
+
+### Login
+
+Cada pessoa tem o próprio acesso. Antes disto, a API inteira abria com um token compartilhado
+e o `resolved_by` das exceções vinha do header `x-user`, escolhido por quem tivesse o token.
+Num motor que mexe em dinheiro isso não era rastro de auditoria.
+
+```
+npm run job -- console-user --email pessoa@empresa.com.br --name "Nome"   # senha gerada, impressa uma vez
+npm run job -- console-user --email pessoa@empresa.com.br --reset-password
+npm run job -- console-user --email pessoa@empresa.com.br --deactivate
+npm run job -- console-user --list
+```
+
+A senha é derivada com scrypt e o banco guarda só o hash, então ela não é recuperável, apenas
+substituível. O token da sessão vai num cookie `HttpOnly` e **nunca** é persistido: o banco
+guarda o sha256 dele, e quem ler o banco não consegue se passar por ninguém. Trocar a senha ou
+desativar alguém derruba as sessões daquela pessoa na hora.
+
+O `CONSOLE_TOKEN` continua existindo para um único uso: `POST /api/v1/jobs/:name`, que é o cron
+externo. Ele não abre mais nenhuma rota de dados.
+
+Detalhes que costumam morder: o cookie sai com `Secure` quando a requisição chega por https, e
+sem `Secure` em `http://localhost`, senão o desenvolvimento e o modo demo não conseguiriam
+entrar; nunca sem `Secure` fora de loopback. Toda rota que muda estado exige
+`content-type: application/json`, o que um formulário de outro site não consegue enviar. E o
+login trava em cinco tentativas erradas por e-mail e por IP em quinze minutos, com o mesmo
+tempo de resposta para e-mail inexistente e senha errada.
+
 ## Modo demo
 
 `npm run demo -- <cenário>` deixa o banco `motor_demo` com um estado que dá para demonstrar,

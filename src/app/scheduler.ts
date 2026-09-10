@@ -16,10 +16,19 @@ export const JOBS = {
 } as const;
 export type JobName = keyof typeof JOBS;
 
+/** Extras que o núcleo não conhece. A limpeza de sessão do console é SQL de adaptador, então
+ *  entra por aqui em vez de virar porta no `Deps`. */
+export interface JobExtras { purgarSessoes?: (agora: Date) => Promise<number> }
+
 /** Roda um job; falha vira exceção `integration_error` visível no console (uma aberta por vez), não só log. */
-export async function runJob(deps: Deps, name: JobName): Promise<unknown> {
+export async function runJob(deps: Deps, name: JobName, extras: JobExtras = {}): Promise<unknown> {
   try {
-    const r = await JOBS[name](deps);
+    const base = await JOBS[name](deps);
+    // Sessão expirada é lixo com risco: fica no banco podendo ser resolvida se o relógio
+    // voltar. Sai no mesmo diário que já limpa audit_log e eventos.
+    const r = name === "reconcile-daily" && extras.purgarSessoes
+      ? { ...(base as object), purged: { ...((base as { purged?: object }).purged ?? {}), sessions: await extras.purgarSessoes(deps.clock.now()) } }
+      : base;
     deps.log(`job ${name}`, { result: r });
     return r;
   } catch (e) {
@@ -36,13 +45,13 @@ export const DAILY_HOUR_UTC = 9;   // 06:00 BRT
 
 /** Um job nunca sobrepõe a si mesmo — vale pro scheduler em processo E pro POST /api/v1/jobs/:name (cron do Supabase). */
 export interface JobRunner { run(name: JobName): Promise<unknown>; inFlight(): JobName[]; isJob(name: string): name is JobName }
-export function createJobRunner(deps: Deps): JobRunner {
+export function createJobRunner(deps: Deps, extras: JobExtras = {}): JobRunner {
   const running = new Map<JobName, Promise<unknown>>();
   return {
     run(name) {
       const current = running.get(name);
       if (current) return current;
-      const p = runJob(deps, name).finally(() => running.delete(name));
+      const p = runJob(deps, name, extras).finally(() => running.delete(name));
       running.set(name, p);
       return p;
     },

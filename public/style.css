@@ -1,0 +1,150 @@
+/* Console do motor de cobrança. Sem framework, sem build — a mesma regra do salvei/site.
+   Tema claro só: quem usa isto olha número o dia inteiro numa sala iluminada. */
+:root {
+  --tinta: #14181f;
+  --tinta-fraca: #5b6675;
+  --papel: #f6f7f9;
+  --cartao: #ffffff;
+  --borda: #dfe3e9;
+  --acento: #1d4ed8;
+  --acento-fraco: #eef2ff;
+  --alerta: #b42318;
+  --alerta-fraco: #fef3f2;
+  --atencao: #b54708;
+  --atencao-fraco: #fffaeb;
+  --ok: #067647;
+  --ok-fraco: #ecfdf3;
+  --raio: 8px;
+  --sombra: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .1);
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  color: var(--tinta);
+  background: var(--papel);
+}
+h1, h2, h3 { margin: 0 0 .5rem; line-height: 1.25; }
+h1 { font-size: 1.35rem; }
+h2 { font-size: 1.05rem; }
+h3 { font-size: .95rem; }
+a { color: var(--acento); }
+button { font: inherit; cursor: pointer; }
+input, select {
+  font: inherit; color: inherit; padding: .45rem .55rem;
+  border: 1px solid var(--borda); border-radius: 6px; background: var(--cartao);
+}
+input:focus-visible, select:focus-visible, button:focus-visible, a:focus-visible {
+  outline: 2px solid var(--acento); outline-offset: 2px;
+}
+
+/* ── login ─────────────────────────────────────────────────────────────── */
+.login { min-height: 100vh; display: grid; place-items: center; padding: 1.5rem; }
+.cartao-login {
+  width: 100%; max-width: 360px; background: var(--cartao); padding: 1.75rem;
+  border: 1px solid var(--borda); border-radius: var(--raio); box-shadow: var(--sombra);
+  display: flex; flex-direction: column;
+}
+.cartao-login .sub { margin: -.25rem 0 1.25rem; color: var(--tinta-fraca); }
+.cartao-login label { font-weight: 600; margin-bottom: .25rem; }
+.cartao-login input { margin-bottom: .9rem; }
+.cartao-login button[type=submit] {
+  background: var(--acento); color: #fff; border: 0; border-radius: 6px; padding: .6rem; font-weight: 600; margin-top: .25rem;
+}
+.cartao-login button[disabled] { opacity: .6; cursor: progress; }
+.rodape-login { color: var(--tinta-fraca); font-size: .82rem; margin: 1rem 0 0; }
+.erro { color: var(--alerta); background: var(--alerta-fraco); border: 1px solid #fda29b; border-radius: 6px; padding: .5rem .6rem; margin: .75rem 0 0; }
+
+/* ── moldura ───────────────────────────────────────────────────────────── */
+header {
+  display: flex; align-items: center; gap: 1.25rem; flex-wrap: wrap;
+  background: var(--cartao); border-bottom: 1px solid var(--borda); padding: .7rem 1.25rem;
+}
+.marca { display: flex; align-items: baseline; gap: .5rem; }
+.marca .cliente { color: var(--tinta-fraca); font-size: .85rem; }
+header nav { display: flex; gap: .25rem; flex-wrap: wrap; margin-left: auto; }
+header nav a {
+  text-decoration: none; color: var(--tinta-fraca); padding: .35rem .7rem; border-radius: 6px; font-weight: 500;
+  display: inline-flex; align-items: center; gap: .4rem;
+}
+header nav a:hover { background: var(--papel); color: var(--tinta); }
+header nav a[aria-current=page] { background: var(--acento-fraco); color: var(--acento); }
+.usuario { display: flex; align-items: center; gap: .6rem; color: var(--tinta-fraca); font-size: .85rem; }
+.link { background: none; border: 0; color: var(--acento); text-decoration: underline; padding: 0; }
+main { padding: 1.25rem; max-width: 1100px; margin: 0 auto; }
+.aviso { margin: 0; padding: .6rem 1.25rem; background: var(--acento-fraco); color: var(--acento); border-bottom: 1px solid var(--borda); }
+.aviso.ruim { background: var(--alerta-fraco); color: var(--alerta); }
+
+/* ── filtros e listas ──────────────────────────────────────────────────── */
+.filtros { display: flex; gap: .75rem; align-items: flex-end; flex-wrap: wrap; margin-bottom: 1rem; }
+.filtros label { display: flex; flex-direction: column; gap: .25rem; font-size: .82rem; color: var(--tinta-fraca); font-weight: 600; }
+.secundario { background: var(--cartao); border: 1px solid var(--borda); border-radius: 6px; padding: .45rem .8rem; }
+.lista { display: flex; flex-direction: column; gap: .6rem; }
+.item {
+  background: var(--cartao); border: 1px solid var(--borda); border-radius: var(--raio); padding: .8rem 1rem;
+  box-shadow: var(--sombra); display: grid; gap: .35rem; cursor: pointer;
+}
+.item:hover { border-color: var(--acento); }
+.item .linha1 { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
+.item .meta { color: var(--tinta-fraca); font-size: .85rem; display: flex; gap: .9rem; flex-wrap: wrap; }
+.valor { font-variant-numeric: tabular-nums; font-weight: 600; }
+.vazio { color: var(--tinta-fraca); padding: 2rem; text-align: center; background: var(--cartao); border: 1px dashed var(--borda); border-radius: var(--raio); }
+.paginacao { display: flex; gap: .6rem; align-items: center; justify-content: center; margin-top: 1rem; color: var(--tinta-fraca); }
+
+.etq { font-size: .74rem; font-weight: 700; text-transform: uppercase; letter-spacing: .02em; padding: .15rem .45rem; border-radius: 4px; white-space: nowrap; }
+.etq.cinza { background: var(--papel); color: var(--tinta-fraca); border: 1px solid var(--borda); }
+.etq.vermelha { background: var(--alerta-fraco); color: var(--alerta); }
+.etq.laranja { background: var(--atencao-fraco); color: var(--atencao); }
+.etq.verde { background: var(--ok-fraco); color: var(--ok); }
+.etq.azul { background: var(--acento-fraco); color: var(--acento); }
+.badge { background: var(--alerta); color: #fff; border-radius: 999px; padding: 0 .4rem; font-size: .75rem; font-weight: 700; }
+
+/* ── cartões ───────────────────────────────────────────────────────────── */
+.cartoes { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: .75rem; margin-bottom: 1.5rem; }
+.cartao { background: var(--cartao); border: 1px solid var(--borda); border-radius: var(--raio); padding: .8rem 1rem; box-shadow: var(--sombra); }
+.cartao .rotulo { color: var(--tinta-fraca); font-size: .8rem; font-weight: 600; }
+.cartao .numero { font-size: 1.5rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.cartao .nota { color: var(--tinta-fraca); font-size: .8rem; }
+.cartao.ruim { border-color: #fda29b; background: var(--alerta-fraco); }
+.cartao.atencao { border-color: #fedf89; background: var(--atencao-fraco); }
+
+/* ── detalhe ───────────────────────────────────────────────────────────── */
+.painel { position: fixed; inset: 0; background: rgba(16, 24, 40, .45); display: grid; place-items: center; padding: 1rem; z-index: 10; }
+.painel-caixa {
+  background: var(--cartao); border-radius: var(--raio); width: 100%; max-width: 720px;
+  max-height: 90vh; overflow: auto; box-shadow: 0 20px 24px -4px rgba(16, 24, 40, .1);
+}
+.painel-caixa.estreito { max-width: 460px; }
+.painel-caixa > header { position: sticky; top: 0; }
+.painel-caixa > div { padding: 1rem 1.25rem; }
+.botoes { display: flex; gap: .6rem; justify-content: flex-end; padding: 0 1.25rem 1.25rem; flex-wrap: wrap; }
+.acoes { display: flex; gap: .6rem; flex-wrap: wrap; margin-top: 1rem; }
+.acoes button, .botoes button { border: 1px solid var(--borda); background: var(--cartao); border-radius: 6px; padding: .5rem .9rem; font-weight: 600; }
+.acoes button.principal, .botoes button.principal { background: var(--acento); border-color: var(--acento); color: #fff; }
+.perigo { background: var(--alerta) !important; border-color: var(--alerta) !important; color: #fff !important; }
+button[disabled] { opacity: .55; cursor: not-allowed; }
+
+dl.campos { display: grid; grid-template-columns: max-content 1fr; gap: .35rem .9rem; margin: 0 0 1rem; }
+dl.campos dt { color: var(--tinta-fraca); font-weight: 600; }
+dl.campos dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+pre.detalhe { background: var(--papel); border: 1px solid var(--borda); border-radius: 6px; padding: .7rem; overflow: auto; font-size: .82rem; margin: 0 0 1rem; }
+table { width: 100%; border-collapse: collapse; font-size: .85rem; margin-bottom: 1rem; }
+th, td { text-align: left; padding: .4rem .5rem; border-bottom: 1px solid var(--borda); }
+th { color: var(--tinta-fraca); font-size: .78rem; text-transform: uppercase; letter-spacing: .02em; }
+
+/* ── configuração ──────────────────────────────────────────────────────── */
+.config { display: flex; flex-direction: column; gap: .75rem; margin-bottom: 1.5rem; }
+.config .campo { background: var(--cartao); border: 1px solid var(--borda); border-radius: var(--raio); padding: .8rem 1rem; box-shadow: var(--sombra); }
+.config .campo .topo { display: flex; gap: .75rem; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.config code { background: var(--papel); padding: .1rem .35rem; border-radius: 4px; }
+.config .ajuda { color: var(--tinta-fraca); font-size: .85rem; margin: .35rem 0 0; }
+.bloco-acao { background: var(--cartao); border: 1px solid var(--borda); border-radius: var(--raio); padding: 1rem; box-shadow: var(--sombra); }
+.bloco-acao p { color: var(--tinta-fraca); margin-top: 0; }
+
+@media (max-width: 640px) {
+  header { gap: .6rem; }
+  header nav { margin-left: 0; width: 100%; }
+  .usuario { margin-left: auto; }
+  dl.campos { grid-template-columns: 1fr; }
+  dl.campos dd { margin-bottom: .4rem; }
+}

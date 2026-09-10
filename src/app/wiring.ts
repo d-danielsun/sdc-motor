@@ -10,7 +10,7 @@ import type { Deps } from "../core/ports.js";
 
 export const DEFAULT_ASAAS_URL = "https://api-sandbox.asaas.com/v3";
 export const MIN_SECRET_LENGTH = 32;
-export interface Env { DATABASE_URL: string; ASAAS_URL: string; ASAAS_API_KEY: string; ASAAS_WEBHOOK_TOKEN: string; ODOO_URL: string; ODOO_DB: string; ODOO_API_KEY: string; ODOO_WEBHOOK_KEY: string; CONSOLE_TOKEN: string | null; PORT: number; warnings: string[] }
+export interface Env { DATABASE_URL: string; ASAAS_URL: string; ASAAS_API_KEY: string; ASAAS_WEBHOOK_TOKEN: string; ODOO_URL: string; ODOO_DB: string; ODOO_API_KEY: string; ODOO_WEBHOOK_KEY: string; CONSOLE_TOKEN: string | null; PORT: number; TRUSTED_PROXIES: number; warnings: string[] }
 
 export function readEnv(e: NodeJS.ProcessEnv = process.env): Env {
   const req = (k: string) => { const v = e[k]; if (!v) throw new Error(`env ${k} ausente — o motor falha fechado`); return v; };
@@ -26,7 +26,9 @@ export function readEnv(e: NodeJS.ProcessEnv = process.env): Env {
     ASAAS_URL: e.ASAAS_URL ?? DEFAULT_ASAAS_URL, ASAAS_API_KEY: req("ASAAS_API_KEY"), ASAAS_WEBHOOK_TOKEN: secret("ASAAS_WEBHOOK_TOKEN"),
     ODOO_URL: (e.ODOO_URL ?? "").replace(/\/+$/, ""), ODOO_DB: e.ODOO_DB ?? "", ODOO_API_KEY: e.ODOO_API_KEY ?? "", ODOO_WEBHOOK_KEY: secret("ODOO_WEBHOOK_KEY"),
     CONSOLE_TOKEN: e.CONSOLE_TOKEN && e.CONSOLE_TOKEN.length >= MIN_SECRET_LENGTH ? e.CONSOLE_TOKEN : null,
-    PORT: Number(e.PORT ?? 8787), warnings,
+    // Quantos proxies existem na frente. 0 (default) = X-Forwarded-For é ignorado, e o freio
+    // de login conta pelo socket. Atrás de Cloud Run / ALB / Cloudflare, ponha 1.
+    PORT: Number(e.PORT ?? 8787), TRUSTED_PROXIES: Math.max(0, Math.trunc(Number(e.TRUSTED_PROXIES ?? 0)) || 0), warnings,
   };
 }
 

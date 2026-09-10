@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { processAsaasEvents, syncInvoices } from "../../src/core/index.js";
-import { CNPJ_OK, dbReachable, world, type World } from "../helpers.js";
+import { CNPJ_OK, CONSOLE_TOKEN, USUARIO, dbReachable, world, type World } from "../helpers.js";
 import { createConsoleApi } from "../../src/app/console.js";
 import { createConsoleQueries } from "../../src/adapters/db/console.js";
 import { createServer } from "../../src/app/server.js";
@@ -19,11 +19,15 @@ async function setup() {
 }
 
 describe("console API", () => {
-  it("auth: 401 com token errado; 503 sem CONSOLE_TOKEN; 404 JSON em rota inexistente", async () => {
+  it("auth: sem sessão é 401; o token compartilhado NÃO abre mais rota de dados; 404 JSON em rota inexistente", async () => {
     const w = await setup();
-    expect((await w.api("/charges", {}, "errado")).status).toBe(401);
-    const off = createServer({ repo: w.deps.repo, asaasWebhookToken: "t".repeat(32), odooWebhookKey: "k".repeat(32), log: () => {}, console: createConsoleApi({ deps: w.deps, queries: createConsoleQueries(w.pool), token: null }) });
-    expect((await off.request("/api/v1/charges", { headers: { authorization: "Bearer x" } })).status).toBe(503);
+    expect((await w.api("/charges", {}, { cookie: null })).status).toBe(401);
+    expect((await w.api("/charges", {}, { cookie: "naoexiste".repeat(3) })).status).toBe(401);
+    // O ponto da #13: quem tinha o CONSOLE_TOKEN via tudo. Agora ele só serve pro cron.
+    expect((await w.api("/charges", {}, { cookie: null, bearer: CONSOLE_TOKEN })).status).toBe(401);
+    expect((await w.api("/exceptions", {}, { cookie: null, bearer: CONSOLE_TOKEN })).status).toBe(401);
+    expect((await w.api("/jobs/watchdog", { method: "POST" }, { cookie: null, bearer: CONSOLE_TOKEN })).status).toBe(200);   // cron continua
+    expect((await w.api("/jobs/watchdog", { method: "POST" }, { cookie: null, bearer: "errado" })).status).toBe(401);
     const nf = await w.api("/nada");
     expect(nf.status).toBe(404); expect(nf.body).toMatchObject({ ok: false, code: "not_found" });
   });
@@ -77,7 +81,7 @@ describe("console API", () => {
     await w.deps.repo.exceptions.open({ type: "stale_heartbeat", refTable: "webhook_events" });
     const ex2 = (await w.api("/exceptions?status=open")).body.data[0].id;
     expect((await w.api(`/exceptions/${ex2}/ignore`, { method: "POST" })).body).toMatchObject({ ok: true, action: "ignored" });
-    expect((await w.api(`/exceptions/${ex2}`)).body).toMatchObject({ status: "ignored", resolvedBy: "dan" });
+    expect((await w.api(`/exceptions/${ex2}`)).body).toMatchObject({ status: "ignored", resolvedBy: USUARIO.email });
     expect((await w.api(`/exceptions/999999/resolve`, { method: "POST" })).status).toBe(404);
   });
   it("write-off: juros do Asaas → writeoff_needed → financeiro aceita → baixa com diff_policy juros_multa; pagamento estornado → 409", async () => {
@@ -145,7 +149,7 @@ describe("console API", () => {
     await w.deps.repo.config.set("ASAAS_WEBHOOK_ID", wh.id);
     expect((await w.api(`/exceptions/${ex.id}/reprocess`, { method: "POST" })).body).toMatchObject({ ok: true, action: "webhook_reactivated" });
     expect((await w.asaas.getWebhook(wh.id))!.interrupted).toBe(false);
-    expect((await w.api(`/exceptions/${ex.id}`)).body).toMatchObject({ status: "resolved", resolvedBy: "dan" });
+    expect((await w.api(`/exceptions/${ex.id}`)).body).toMatchObject({ status: "resolved", resolvedBy: USUARIO.email });
   });
   it("aceitar write-off: exceção de outro tipo → 409; pagamento que sumiu do Asaas → 502, sem baixa", async () => {
     const w = await setup();
@@ -174,13 +178,15 @@ describe("console API", () => {
     expect((await w.api(`/exceptions/${ex.id}`)).body.status).toBe("open");
     expect(w.asaas.payments.size).toBe(0);
   });
-  it("x-user é sanitizado antes de virar resolved_by — nunca vai cru pro banco", async () => {
+  it("resolved_by é o e-mail da SESSÃO; x-user enviado à mão é ignorado (AC3)", async () => {
     const w = await fresh();
-    for (const [header, esperado] of [["fer<script>alert(1)</script>@exemplo.com.br", "ferscriptalert1script@exemplo.com.br"], ["'; drop table charges; --", "droptablecharges--"], ["«»", "console"], ["f".repeat(80), "f".repeat(64)]] as const) {
-      await w.deps.repo.exceptions.open({ type: "stale_heartbeat", refTable: "webhook_events", detail: { header } });
+    // Antes da #13 isto era o header `x-user`, escolhido por quem tivesse o token: não era
+    // rastro de auditoria, era sugestão. Agora quem resolveu é quem estava logado.
+    for (const forjado of ["chefe@exemplo.com.br", "'; drop table charges; --", "«»", "f".repeat(80)]) {
+      await w.deps.repo.exceptions.open({ type: "stale_heartbeat", refTable: "webhook_events", detail: { forjado } });
       const ex = (await w.api("/exceptions?status=open")).body.data[0];
-      await w.api(`/exceptions/${ex.id}/resolve`, { method: "POST", headers: { "x-user": header } });
-      expect((await w.api(`/exceptions/${ex.id}`)).body.resolvedBy, header).toBe(esperado);
+      await w.api(`/exceptions/${ex.id}/resolve`, { method: "POST", headers: { "x-user": forjado } });
+      expect((await w.api(`/exceptions/${ex.id}`)).body.resolvedBy, forjado).toBe(USUARIO.email);
     }
     expect((await w.pool.query("select count(*)::int as n from charges")).rows[0].n).toBe(0);
   });
