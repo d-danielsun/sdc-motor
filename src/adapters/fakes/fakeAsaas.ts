@@ -50,10 +50,11 @@ export class FakeAsaas implements AsaasClient {
     if (p.status === "RECEIVED" || p.status === "RECEIVED_IN_CASH") throw new Error("fake asaas: não é possível apagar cobrança recebida");
     p.deleted = true; this.deleted.push(id);
   }
-  async *listPayments(f: { status?: string; paymentDateFrom?: string; externalReference?: string }): AsyncIterable<AsaasPayment> {
+  async *listPayments(f: { status?: string; paymentDateFrom?: string; creditDateFrom?: string; externalReference?: string }): AsyncIterable<AsaasPayment> {
     for (const p of this.payments.values()) {
       if (f.status && p.status !== f.status) continue;
       if (f.paymentDateFrom && (p.paymentDate ?? "") < f.paymentDateFrom) continue;
+      if (f.creditDateFrom && (p.creditDate ?? "") < f.creditDateFrom) continue;
       if (f.externalReference && p.externalReference !== f.externalReference) continue;
       yield { ...p };
     }

@@ -45,7 +45,9 @@ Container completo (AC14 — a prova de que não depende do Supabase): `docker c
 | `GET /dashboard` | aging das cobranças abertas (a vencer / 1–7 / 8–30 / 31+) |
 | `GET /health-report` | kill switch, régua, abertas, exceções por tipo, último evento/varredura/reconcile/watchdog, fila do Asaas, idade da key |
 | `GET /config` · `PUT /config/:key {value}` | `IDA_ENABLED` (gate R1), `TOLERANCE_BRL` (≤100), `GO_LIVE_CUTOFF_DATE`, `JUROS_MULTA_AUTO`, `RECONCILE_LOOKBACK_DAYS` (1–30) |
-| `POST /customers/enable-notifications` | gate R3: liga a régua nos clientes existentes e como política pros próximos |
+| `POST /customers/enable-notifications` | gate R3: responde **202** e liga a régua em segundo plano, retomável; progresso no `health-report` |
+| `POST /exceptions/requeue-all?type=` | reenfileira em lote os eventos em `error` das exceções abertas daquele tipo; a exceção NÃO é resolvida aqui |
+| `GET /charges?after_due_date=&after_id=` | paginação keyset (os dois juntos); o `offset` continua valendo e é ignorado quando o cursor vem |
 | `POST /session {email,password}` · `DELETE /session` · `GET /me` | login, logout e quem está logado |
 | `POST /jobs/:name` | pro cron externo: roda `worker`, `sync-invoices`, `reconcile-daily` ou `watchdog` com o mesmo guard de não-sobreposição; 502 se o job falhou. **A única rota que ainda aceita `Bearer $CONSOLE_TOKEN`** |
 
@@ -63,6 +65,29 @@ O agendador é **em processo**: vale enquanto o processo estiver de pé. Num hos
 processo sem tráfego, como Cloud Run com escala a zero, nada disso roda e o motor fica saudável
 sem fazer nada. Nesse caso, um cron externo chama `POST /api/v1/jobs/:name` com o `CONSOLE_TOKEN`
 — é o único uso que sobrou desse token. Etapa 4b do `docs/RUNBOOK-R1.md` tem os intervalos.
+
+## Banco: o role e as migrations
+
+**O role do `DATABASE_URL` tem que ser dono das tabelas, ou ter `BYPASSRLS`.** RLS está ligado em
+todas as tabelas e não há policy para o motor. Funciona hoje porque o role é dono, e dono ignora
+RLS. Trocar para um role de aplicação com menos privilégio, o que qualquer revisão de segurança vai
+pedir, faz as leituras devolverem **vazio em vez de erro** — e vazio, para este motor, significa
+"esta parcela ainda não tem boleto". Ele emitiria a segunda cobrança da mesma parcela, em silêncio,
+para cliente real.
+
+Por isso o boot tem um tripwire: se as migrations estão aplicadas mas o motor não enxerga as
+chaves que a primeira migration semeia, ele **recusa subir** e a mensagem distingue os três casos,
+sem privilégio de leitura, com privilégio mas sem ser dono com RLS ligado, e banco errado. Falhar
+no boot é barato; descobrir isso pela fatura duplicada do cliente, não.
+
+**Migrations são forward-only.** O runner guarda o sha256 do conteúdo de cada arquivo aplicado e
+recusa aplicar quando o disco discorda do banco, ou quando um arquivo novo ordena antes do último
+aplicado (dois PRs em paralelo criando 0008 e 0009, com o 0009 mergeando primeiro). Desfazer uma
+mudança é escrever uma migration nova, não editar a antiga.
+
+Existe `db/migrations/down/` para um caso só: o deploy subiu, a migration foi aplicada, o código
+novo está quebrando e a decisão é voltar. Cada arquivo lá diz **o que se perde de dado**, porque
+`drop column` não tem volta. Leia `db/migrations/down/LEIA-ME.md` antes de rodar qualquer um.
 
 ## Alertas críticos
 

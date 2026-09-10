@@ -1,7 +1,7 @@
 // Roda um job uma vez e sai. Uso: npm run job -- reconcile-daily | register-asaas-webhook | console-user
 import { ASAAS_EVENTS } from "../adapters/asaas/client.js";
 import { createAuthStore } from "../adapters/db/auth.js";
-import { assertMigrated } from "../adapters/db/migrations.js";
+import { assertLeitura, assertMigrated } from "../adapters/db/migrations.js";
 import { SenhaInvalida, assertSenhaAceitavel, gerarSenha, hashPassword, isEmail, normalizeEmail } from "../core/auth.js";
 import { JOBS, runJob, type JobName } from "../app/scheduler.js";
 import { buildDeps, jsonLog, readEnv } from "../app/wiring.js";
@@ -22,6 +22,7 @@ const name = process.argv[2];
 const env = readEnv();
 const { deps, pool, close } = buildDeps(env);
 await assertMigrated(pool).catch((e) => { console.error(String((e as Error).message)); process.exit(1); });
+await assertLeitura(pool).catch((e) => { console.error(String((e as Error).message)); process.exit(1); });
 
 let exitCode = 0;
 if (name === "register-asaas-webhook") {

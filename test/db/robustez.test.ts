@@ -163,7 +163,7 @@ describe("retenção — o purge só apaga o que já foi processado", () => {
     const err = (await w.deps.repo.asaasEvents.insert({ asaasEventId: "velho-error", eventType: "PAYMENT_RECEIVED", asaasPaymentId: "pay_e", payload: {} }))!;
     await w.deps.repo.asaasEvents.mark(done, "done");
     await w.deps.repo.asaasEvents.mark(err, "error", { error: "o Odoo estava fora" });
-    await w.deps.repo.odooEvents.mark(await w.deps.repo.odooEvents.insert({ odooModel: "res.partner", odooId: 10, odooAction: null, payload: {} }), "ignored");
+    await w.deps.repo.odooEvents.mark((await w.deps.repo.odooEvents.insert({ odooModel: "res.partner", odooId: 10, odooAction: null, payload: {} }))!, "ignored");
     await w.pool.query("update audit_log set created_at = now() - interval '200 days' where endpoint like 'GET%'");
     await w.pool.query("update webhook_events set processed_at = now() - interval '200 days'");
     await w.pool.query("update odoo_events set processed_at = now() - interval '200 days'");
@@ -248,9 +248,12 @@ describe("U8 — dois workers no mesmo tick", () => {
     const timers: Array<() => void> = [];
     const sched = startScheduler(w.deps, { setInterval: ((fn: () => void) => { timers.push(fn); return 0 as never; }) as never, clearInterval: (() => undefined) as never });
     await Promise.all([sched.tick(), sched.tick(), sched.tick()]);   // 3 ticks concorrentes (13h UTC ≥ 09h): um só reconcile
-    expect(max).toBe(1); expect(calls).toBe(2);   // RECEIVED + RECEIVED_IN_CASH, uma varredura só
+    // 4 = 2 status (RECEIVED, RECEIVED_IN_CASH) × 2 passes (data de pagamento, data de CRÉDITO).
+    // O passe por crédito entrou na #15: boleto pago numa quinta e creditado na terça sai da janela
+    // de pagamento justo quando vira RECEIVED. `max === 1` é o que importa aqui: uma varredura só.
+    expect(max).toBe(1); expect(calls).toBe(4);
     await sched.tick();                            // já rodou hoje: não roda de novo
-    expect(calls).toBe(2);
+    expect(calls).toBe(4);
     await sched.stop();
   });
 });

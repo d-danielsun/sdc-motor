@@ -1,5 +1,20 @@
 // Read model do console: o que a UI mostra. Escrita passa pelos casos de uso em usecases/console.ts.
 import type { ChargeStatus, ExceptionType, Money } from "./types.js";
+import type { ReconcileSummary } from "./usecases/reconcileDaily.js";
+import type { SyncSummary } from "./usecases/syncInvoices.js";
+import type { WatchdogSummary } from "./usecases/watchdog.js";
+
+/** Progresso do `enable-notifications`, que virou job retomável: ligar a régua para uma base
+ *  grande não cabe numa requisição HTTP. */
+export interface NotificationsProgress { total: number; updated: number; failed: number; at: string; ok: boolean }
+
+/** Registro único dos tipos de exceção. Estava duplicado no adaptador HTTP; a lista tem que ser a
+ *  mesma que a constraint da 0003 aceita, e duas listas divergem em silêncio. */
+export const EXC_TYPES: readonly ExceptionType[] = [
+  "customer_missing_document", "charge_create_failed", "payment_unmatched", "amount_divergent",
+  "reversal_pending", "queue_interrupted", "stale_heartbeat", "api_key_expiring",
+  "writeoff_needed", "webhook_penalized", "integration_error",
+];
 
 export interface ExceptionRow {
   id: number; type: ExceptionType; status: "open" | "resolved" | "ignored"; refTable: string | null; refId: number | null;
@@ -16,13 +31,25 @@ export interface ChargeRow {
   openExceptions: number; createdAt: string; updatedAt: string;
 }
 export interface Page<T> { data: T[]; total: number; limit: number; offset: number }
-export interface ChargeFilter { status?: ChargeStatus[]; dueFrom?: string; dueTo?: string; partnerId?: number; q?: string; limit?: number; offset?: number }
+export interface ChargeFilter {
+  status?: ChargeStatus[]; dueFrom?: string; dueTo?: string; partnerId?: number; q?: string; limit?: number; offset?: number;
+  /** Paginação keyset: os DOIS juntos, ou nenhum. Quando vêm, o `offset` é ignorado — `offset`
+   *  repete scan+sort a cada página e a página N custa N vezes a primeira. A ordem é
+   *  `due_date asc, id asc`, e nenhuma das duas colunas aceita nulo no schema. */
+  after?: { dueDate: string; id: number };
+}
 export interface ExceptionFilter { status?: "open" | "resolved" | "ignored"; type?: ExceptionType; limit?: number; offset?: number }
 export interface AgingBucket { bucket: "a_vencer" | "1_7" | "8_30" | "31_mais"; count: number; amount: Money }
-export interface JobSummary { at: string; ok: boolean; [k: string]: unknown }
+/** Forma mínima de todo resumo de job. Os três resumos concretos vivem nos próprios casos de uso
+ *  (SyncSummary, ReconcileSummary, WatchdogSummary) e são o que o health-report devolve — antes era
+ *  `[k: string]: unknown`, e a UI tinha que adivinhar o que existia. */
+export interface JobSummary { at: string; ok: boolean }
 export interface HealthReport {
   idaEnabled: boolean; notificationsEnabled: boolean; openCharges: number; openExceptionsByType: Record<string, number>;
-  lastAsaasEventAt: string | null; lastOdooEventAt: string | null; lastSync: JobSummary | null; lastReconcile: JobSummary | null; lastWatchdog: JobSummary | null;
+  lastAsaasEventAt: string | null; lastOdooEventAt: string | null;
+  lastSync: SyncSummary | null; lastReconcile: ReconcileSummary | null; lastWatchdog: WatchdogSummary | null;
+  /** Progresso do job de notificações, quando houver um em andamento ou terminado. */
+  notificationsProgress: NotificationsProgress | null;
   webhook: { id: string | null; interrupted: boolean | null; penalizedRequestsCount: number | null };
   odooApiKeyAgeDays: number | null;
 }

@@ -38,7 +38,9 @@ export interface AsaasClient {
   /** Boleto vivo (não deletado) com este externalReference — idempotência da ida pela fonte de verdade. */
   findPaymentByExternalRef(ref: string): Promise<AsaasPayment | null>;
   deletePayment(id: string): Promise<void>;
-  listPayments(f: { status?: string; paymentDateFrom?: string; externalReference?: string }): AsyncIterable<AsaasPayment>;
+  /** `creditDateFrom` usa `estimatedCreditDate[ge]`: boleto pago numa quinta e creditado na terça
+   *  sai da janela de `paymentDate` quando finalmente vira RECEIVED. */
+  listPayments(f: { status?: string; paymentDateFrom?: string; creditDateFrom?: string; externalReference?: string }): AsyncIterable<AsaasPayment>;
   getWebhook(id: string): Promise<AsaasWebhook | null>;
   listWebhooks(): Promise<AsaasWebhook[]>;
   createWebhook(w: { name: string; url: string; email: string; authToken: string; events: string[] }): Promise<AsaasWebhook>;
@@ -78,19 +80,27 @@ export interface Repo {
   asaasEvents: {
     insert(e: { asaasEventId: string; eventType: string; asaasPaymentId: string | null; payload: unknown }): Promise<number | null>; // null = duplicado
     pending(limit: number, now: Date): Promise<StoredAsaasEvent[]>;
-    mark(id: number, status: ProcessStatus, o?: { error?: string | null; attempts?: number; nextAttemptAt?: Date | null }): Promise<void>;
-    touch(id: number, now: Date): Promise<void>;
+    /** `false` = a reserva foi perdida (outro worker assumiu depois do TTL): NÃO sobrescreveu nada. */
+    mark(id: number, status: ProcessStatus, o?: { error?: string | null; attempts?: number; nextAttemptAt?: Date | null; claimToken?: string }): Promise<boolean>;
+    touch(id: number, now: Date, claimToken?: string): Promise<boolean>;
     lastReceivedAt(): Promise<Date | null>;
     findByPayment(asaasPaymentId: string, eventType: string): Promise<StoredAsaasEvent | null>;
     reset(id: number): Promise<void>;
+    /** Volta para `pending` SÓ se estiver em `error` (zera attempts/next_attempt_at/claim_token).
+     *  `false` = não estava em erro, então nada foi mexido. */
+    requeueFromError(id: number): Promise<boolean>;
     purgeProcessedOlderThan(days: number): Promise<number>;
   };
   odooEvents: {
-    insert(e: { odooModel: string; odooId: number; odooAction: string | null; payload: unknown; status?: ProcessStatus }): Promise<number>;
+    /** `null` = já existe notificação PENDENTE para a mesma fatura (índice parcial unique da 0008):
+     *  o Odoo dispara por gravação, não por transição, e repetir o mesmo trabalho é desperdício. */
+    insert(e: { odooModel: string; odooId: number; odooAction: string | null; payload: unknown; status?: ProcessStatus }): Promise<number | null>;
     pending(limit: number, now: Date): Promise<StoredOdooEvent[]>;
-    mark(id: number, status: ProcessStatus, o?: { error?: string | null; attempts?: number; nextAttemptAt?: Date | null }): Promise<void>;
-    touch(id: number, now: Date): Promise<void>;
+    /** `false` = a reserva foi perdida: NÃO sobrescreveu o resultado de quem assumiu. */
+    mark(id: number, status: ProcessStatus, o?: { error?: string | null; attempts?: number; nextAttemptAt?: Date | null; claimToken?: string }): Promise<boolean>;
+    touch(id: number, now: Date, claimToken?: string): Promise<boolean>;
     reset(id: number): Promise<void>;
+    requeueFromError(id: number): Promise<boolean>;
     purgeProcessedOlderThan(days: number): Promise<number>;
   };
   reconciliations: {
@@ -110,6 +120,8 @@ export interface Repo {
     countOpenByType(): Promise<Record<string, number>>;
     get(id: number): Promise<{ id: number; type: ExceptionType; status: "open" | "resolved" | "ignored"; refTable: string | null; refId: number | null; detail: unknown } | null>;
     setStatus(id: number, status: "open" | "resolved" | "ignored", by: string | null): Promise<void>;
+    /** Exceções ABERTAS do tipo que apontam para um evento — o alvo do reenfileiramento em lote. */
+    listOpenWithEvent(type: ExceptionType): Promise<Array<{ id: number; refTable: "webhook_events" | "odoo_events"; refId: number }>>;
   };
   watermarks: {
     get(key: string): Promise<{ writeDate: string; id: number } | null>;

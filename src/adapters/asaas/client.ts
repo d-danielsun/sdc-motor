@@ -94,10 +94,11 @@ export class AsaasHttpClient implements AsaasClient {
     const r = await this.req<Raw>("DELETE", `/payments/${idPath(id)}`, undefined, true);   // já apagado = ok
     if (r && r.deleted !== true) throw new HttpError("asaas", 502, r, "asaas: DELETE não confirmou deleted=true");
   }
-  async *listPayments(f: { status?: string; paymentDateFrom?: string; externalReference?: string }): AsyncIterable<AsaasPayment> {
+  async *listPayments(f: { status?: string; paymentDateFrom?: string; creditDateFrom?: string; externalReference?: string }): AsyncIterable<AsaasPayment> {
     const q = new URLSearchParams({ limit: "100" });
     if (f.status) q.set("status", f.status);
     if (f.paymentDateFrom) q.set("paymentDate[ge]", f.paymentDateFrom);
+    if (f.creditDateFrom) q.set("estimatedCreditDate[ge]", f.creditDateFrom);
     if (f.externalReference) q.set("externalReference", f.externalReference);
     for (let offset = 0; ; offset += 100) {
       q.set("offset", String(offset));
