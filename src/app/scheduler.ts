@@ -3,6 +3,7 @@
 import type { Deps } from "../core/ports.js";
 import { AUDIT_RETENTION_DAYS, EVENT_RETENTION_DAYS } from "../core/limits.js";
 import { processAsaasEvents, processOdooEvents, reconcileDaily, syncInvoices, watchdog } from "../core/index.js";
+import { alertaJobFalhou, alertar } from "../core/usecases/notify.js";
 import type { JobSummary } from "../core/console.js";
 
 export const JOBS = {
@@ -35,7 +36,13 @@ export async function runJob(deps: Deps, name: JobName, extras: JobExtras = {}):
     const error = (e as Error).message;
     deps.log(`job ${name} falhou`, { error });
     try {
-      await deps.repo.exceptions.openOnce({ type: "integration_error", refTable: "jobs", detail: { job: name, error, at: deps.clock.now().toISOString() } });
+      // `jobs:<nome>` e não `jobs`: com a ref genérica, os quatro jobs dividiam UMA exceção, e o
+      // e-mail de um job levava para a exceção que descrevia o erro de outro.
+      const exc = await deps.repo.exceptions.openOnce({ type: "integration_error", refTable: `jobs:${name}`, detail: { job: name, error, at: deps.clock.now().toISOString() } });
+      // O quarto alerta. Um job que falha de forma permanente (chave vencida, base expirada)
+      // para uma parte do ciclo em silêncio — este e-mail é o que quebra o silêncio.
+      const consoleUrl = await deps.repo.config.get<string | null>("CONSOLE_PUBLIC_URL").catch(() => null);
+      await alertar(deps, alertaJobFalhou({ job: name, error, excecaoId: exc.id }), { consoleUrl });
     } catch (e2) { deps.log("não consegui registrar a exceção do job", { error: (e2 as Error).message }); }
     return null;
   }

@@ -10,6 +10,14 @@ const env = readEnv();
 for (const w of env.warnings) jsonLog("aviso de configuração", { warning: w });
 const { deps, queries, pool, close } = buildDeps(env);
 await assertMigrated(pool).catch((e) => { console.error(String((e as Error).message)); process.exit(1); });
+// O link do e-mail de alerta mora em app_config (o núcleo não lê env). Semeado no boot para
+// que trocar o endereço público seja mudar o env e reiniciar.
+if (env.CONSOLE_PUBLIC_URL) await deps.repo.config.set("CONSOLE_PUBLIC_URL", env.CONSOLE_PUBLIC_URL).catch(() => undefined);
+// Sem esta data o watchdog não tem como saber a idade da chave, e o alerta de vencimento nunca
+// dispara. Semeada do ambiente para que trocar a chave seja trocar env + reiniciar.
+if (env.ODOO_API_KEY_CREATED_AT && !Number.isNaN(new Date(env.ODOO_API_KEY_CREATED_AT).getTime())) {
+  await deps.repo.config.set("ODOO_API_KEY_CREATED_AT", new Date(env.ODOO_API_KEY_CREATED_AT).toISOString()).catch(() => undefined);
+}
 const auth = createAuthStore(pool);
 const jobs = createJobRunner(deps, { purgarSessoes: (agora) => auth.purgarExpiradas(agora) });
 const app = createServer({
