@@ -15,6 +15,7 @@ Motor de cobrança Odoo ↔ Asaas da SDC (deal Salvei, R$ 8k/mês). Fatura posta
 - Read model do console: `src/core/console.ts` (interface) + `src/adapters/db/console.ts` (SQL). Ações: `src/core/usecases/console.ts`.
 - Spec-fonte: `~/w/salvei/propostas/SDC/02-SPEC.md` (v1.1). Contratos Odoo/Asaas estão lá, não aqui.
 - Implantação: `docs/RUNBOOK-R1.md` (zero → emissão ligada) e `docs/GO-LIVE.md` (checklist). O wizard do deal aponta para os dois.
+- Spikes que faltam: `docs/SPIKE-S03.md` (assistente de baixa, escreve — só duplicata) e `docs/SPIKE-S04.md` (regras + webhook). `scripts/tunnel.sh` dá a URL pública pronta.
 
 ## Convenções
 - Dinheiro: `numeric(14,2)` no banco, `string` decimal no TS (nunca `number` pra somar). Datas civis (`due_date`, `payment_date`) são `date` em America/Sao_Paulo.

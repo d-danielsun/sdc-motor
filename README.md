@@ -217,6 +217,29 @@ Para rodar a mesma coisa na máquina: `npm run db:up && npm run db:migrate && np
 db:migrate:test && npm run typecheck && npm test`. O `DATABASE_URL_TEST` sobrescreve o banco
 de teste quando ele não está na porta local padrão, que é o que o CI faz.
 
+## Quando o acesso ao Odoo chegar
+
+Os dois spikes que faltam precisam de acesso, e o objetivo é que eles rodem numa tarde, não numa
+semana. O que dá para preparar antes já está pronto.
+
+`scripts/tunnel.sh` abre um túnel público (quick tunnel do cloudflared, sem conta) e imprime as
+duas URLs já montadas: a da regra do Odoo com o token no lugar, e a do webhook do Asaas. Ele
+recusa abrir se o motor não estiver respondendo, porque túnel apontado para porta morta é o erro
+que custa mais tempo: a URL aparece, o Odoo entrega, e o webhook morre em 502 sem explicação.
+
+`docs/SPIKE-S03.md` é o roteiro do assistente de baixa do Odoo, que é o único pedaço do motor
+escrito a partir da especificação e nunca exercitado contra o sistema real. Ele transforma três
+suposições em fato, e a mais importante é se o `communication` que o motor escreve no assistente
+vira o `memo` que ele lê no pagamento. Se não virar, a chave de idempotência da baixa não funciona
+e um retry duplica pagamento no ERP do cliente.
+
+`docs/SPIKE-S04.md` é o roteiro das regras de automação e da entrega do webhook. Além de provar o
+push, ele mede o que a documentação do Odoo não garante: quantas vezes a regra dispara por
+postagem.
+
+Os dois documentos dizem onde registrar o resultado e apontam explicitamente o que é suposição a
+confirmar. Escrever só em duplicata de teste, nunca na base de produção.
+
 ## O que ainda depende de acesso externo
 
 - **S0.1/S0.3** — `OdooJson2Client.registerPayment` segue o desenho da spec; campos exigidos pelo wizard e o tratamento de diferença (juros/multa) se confirmam na duplicata de teste.
