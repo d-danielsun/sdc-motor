@@ -6,14 +6,18 @@ import { fixedClock } from "../src/adapters/clock.js";
 import { createServer } from "../src/app/server.js";
 import { createConsoleApi } from "../src/app/console.js";
 import { createJobRunner } from "../src/app/scheduler.js";
+import { createAuthStore } from "../src/adapters/db/auth.js";
 import { createConsoleQueries } from "../src/adapters/db/console.js";
+import { hashPassword, type FreioDeLogin } from "../src/core/auth.js";
 import { CONFIG_KEYS } from "../src/core/console.js";
 import type { Deps } from "../src/core/ports.js";
 
 // Banco SEPARADO do de desenvolvimento (lição U4 do QA: os testes sujavam a config do dev).
 export const DB_URL = process.env.DATABASE_URL_TEST ?? "postgres://motor:motor@localhost:55432/motor_test";
-const TABLES = ["reconciliations", "exceptions", "charges", "customers_map", "webhook_events", "odoo_events", "sync_watermarks", "audit_log"];
+const TABLES = ["reconciliations", "exceptions", "charges", "customers_map", "webhook_events", "odoo_events", "sync_watermarks", "audit_log", "console_sessions", "console_users"];
 export const TOKEN = "t".repeat(32), KEY = "k".repeat(32), CONSOLE_TOKEN = "c".repeat(40);
+/** Usuário que o `world()` cria e loga: as chamadas de `api()` são desta pessoa. */
+export const USUARIO = { email: "financeiro@exemplo.com.br", name: "Financeiro", senha: "senha-de-teste-1" };
 // Documentos SINTÉTICOS com dígito verificador válido. O CNPJ daqui já foi o da BLZA
 // Digital, a entidade que fatura este deal — e o repositório é público desde 10/09/2026.
 export const CPF_OK = "11144477735";
@@ -26,15 +30,18 @@ export async function dbReachable(): Promise<boolean> {
 
 export interface World {
   deps: Deps; odoo: FakeOdoo; asaas: FakeAsaas; pool: ReturnType<typeof createPool>;
+  auth: ReturnType<typeof createAuthStore>;
   logs: Array<{ msg: string; ctx?: Record<string, unknown> }>;
   app(): ReturnType<typeof createServer>;
-  /** chamada autenticada na API do console: devolve status + JSON */
-  api(path: string, init?: RequestInit, token?: string): Promise<{ status: number; body: any }>;
+  /** Cookie de sessão da pessoa logada — o que autentica as rotas de dados. */
+  sessao: string;
+  /** chamada na API do console COM a sessão; `o.cookie:null` derruba a sessão, `o.bearer` usa o token do cron. */
+  api(path: string, init?: RequestInit, o?: { cookie?: string | null; bearer?: string }): Promise<{ status: number; body: any; headers: Headers }>;
   close: () => Promise<void>;
 }
 
 /** Mundo limpo: tabelas truncadas, app_config no default do registro (com IDA ligada, salvo pedido contrário). */
-export async function world(o: { today?: string; idaEnabled?: boolean; cutoff?: string | null } = {}): Promise<World> {
+export async function world(o: { today?: string; idaEnabled?: boolean; cutoff?: string | null; freio?: FreioDeLogin } = {}): Promise<World> {
   const pool = createPool(DB_URL);
   await pool.query(`truncate ${TABLES.join(", ")} restart identity cascade`);
   await pool.query("delete from app_config");
@@ -45,13 +52,23 @@ export async function world(o: { today?: string; idaEnabled?: boolean; cutoff?: 
   const asaas = new FakeAsaas();
   const logs: World["logs"] = [];
   const deps: Deps = { repo, odoo, asaas, clock: fixedClock(`${o.today ?? "2026-09-10"}T13:00:00.000Z`), log: (msg, ctx) => logs.push({ msg, ctx }) };
-  const consoleApi = createConsoleApi({ deps, queries: createConsoleQueries(pool), token: CONSOLE_TOKEN, jobs: createJobRunner(deps) });
+  const auth = createAuthStore(pool);
+  const consoleApi = createConsoleApi({ deps, queries: createConsoleQueries(pool), token: CONSOLE_TOKEN, jobs: createJobRunner(deps), auth, freio: o.freio });
   const app = () => createServer({ repo, asaasWebhookToken: TOKEN, odooWebhookKey: KEY, log: () => {}, console: consoleApi });
-  const api: World["api"] = async (path, init = {}, token = CONSOLE_TOKEN) => {
-    const res = await app().request(`/api/v1${path}`, { ...init, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-user": "dan", ...(init.headers ?? {}) } });
-    return { status: res.status, body: await res.json().catch(() => null) };
+
+  // Uma pessoa logada, porque desde a #13 o token compartilhado não abre rota de dados.
+  const pessoa = await auth.criarOuAtualizar({ email: USUARIO.email, name: USUARIO.name, passwordHash: await hashPassword(USUARIO.senha) });
+  const { token: sessao } = await auth.abrirSessao(pessoa.id, deps.clock.now());
+
+  const api: World["api"] = async (path, init = {}, o = {}) => {
+    const cookie = o.cookie === undefined ? sessao : o.cookie;
+    const headers: Record<string, string> = { "content-type": "application/json", ...(init.headers as Record<string, string> ?? {}) };
+    if (cookie) headers.cookie = `sdc_session=${cookie}`;
+    if (o.bearer) headers.authorization = `Bearer ${o.bearer}`;
+    const res = await app().request(`/api/v1${path}`, { ...init, headers });
+    return { status: res.status, body: await res.json().catch(() => null), headers: res.headers };
   };
-  return { deps, odoo, asaas, pool, logs, app, api, close: () => pool.end() };
+  return { deps, odoo, asaas, pool, auth, logs, app, api, sessao, close: () => pool.end() };
 }
 
 /** Parceiro 10 + fatura 100 com 2 parcelas de 100 — o cenário padrão. */

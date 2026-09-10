@@ -1,4 +1,5 @@
 import { serve } from "@hono/node-server";
+import { createAuthStore } from "../adapters/db/auth.js";
 import { assertMigrated } from "../adapters/db/migrations.js";
 import { createConsoleApi } from "./console.js";
 import { createJobRunner, startScheduler } from "./scheduler.js";
@@ -9,8 +10,13 @@ const env = readEnv();
 for (const w of env.warnings) jsonLog("aviso de configuração", { warning: w });
 const { deps, queries, pool, close } = buildDeps(env);
 await assertMigrated(pool).catch((e) => { console.error(String((e as Error).message)); process.exit(1); });
-const jobs = createJobRunner(deps);
-const app = createServer({ repo: deps.repo, asaasWebhookToken: env.ASAAS_WEBHOOK_TOKEN, odooWebhookKey: env.ODOO_WEBHOOK_KEY, log: jsonLog, console: createConsoleApi({ deps, queries, token: env.CONSOLE_TOKEN, jobs }) });
+const auth = createAuthStore(pool);
+const jobs = createJobRunner(deps, { purgarSessoes: (agora) => auth.purgarExpiradas(agora) });
+const app = createServer({
+  repo: deps.repo, asaasWebhookToken: env.ASAAS_WEBHOOK_TOKEN, odooWebhookKey: env.ODOO_WEBHOOK_KEY, log: jsonLog,
+  console: createConsoleApi({ deps, queries, token: env.CONSOLE_TOKEN, jobs, auth }),
+  staticRoot: "./public",
+});
 const scheduler = startScheduler(deps, { runner: jobs });
 const server = serve({ fetch: app.fetch, port: env.PORT }, (info) => jsonLog("motor no ar", { port: info.port, console: env.CONSOLE_TOKEN !== null }));
 let stopping = false;

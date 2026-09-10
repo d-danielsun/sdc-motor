@@ -3,9 +3,11 @@
 // Roda contra o banco de teste, chamando as mesmas funções que o CLI chama.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { todayBrt } from "../../src/adapters/clock.js";
+import { createAuthStore } from "../../src/adapters/db/auth.js";
+import { verifyPassword } from "../../src/core/auth.js";
 import { createPool } from "../../src/adapters/db/pool.js";
 import {
-  CENARIOS, assertBancoDescartavel, assertDemoUrl, cicloFeliz, credenciais, criarCtx, demoDeps,
+  CENARIOS, DEMO_EMAIL, assertBancoDescartavel, assertDemoUrl, cicloFeliz, credenciais, criarCtx, demoDeps,
   deslocar, divergente, filaParada, juros, resetDemoDb, resumir, semCpf, semear, vencidas,
   type DemoCtx,
 } from "../../src/cli/demo.js";
@@ -217,18 +219,29 @@ describe("guarda que pergunta ao servidor (P1 do verificador)", () => {
 });
 
 describe("saída do comando (AC6)", () => {
-  it("sem console_users: imprime a URL que existe e o token a usar", async () => {
+  it("com console_users (desde a #13): cria o usuário de demonstração e imprime a senha", async () => {
     await resetDemoDb(pool, hoje, DESCARTAVEL);
-    const c = await credenciais(pool, { CONSOLE_TOKEN: "t".repeat(40), PORT: "9999" });
-    expect(c.modo).toBe("token");
+    const c = await credenciais(pool, { PORT: "9999" });
+    expect(c.modo).toBe("console_users");
     const texto = c.linhas.join("\n");
-    expect(texto).toContain("http://localhost:9999/api/v1/dashboard");
-    expect(texto).toContain("t".repeat(40));   // o token de fato, não mascarado
+    expect(texto).toContain("http://localhost:9999/console/");
+    expect(texto).toContain(DEMO_EMAIL);
+    expect(texto).toMatch(/senha:\s+\S{10,}/);
+    // e o usuário existe mesmo, com senha que funciona
+    const u = await createAuthStore(pool).porEmail(DEMO_EMAIL);
+    expect(u?.active).toBe(true);
+    const senha = /senha:\s+(\S+)/.exec(texto)?.[1] ?? "";
+    expect(await verifyPassword(senha, u!.passwordHash)).toBe(true);
   });
-  it("sem token: diz como gerar um em vez de imprimir vazio", async () => {
-    const c = await credenciais(pool, {});
-    expect(c.linhas.join("\n")).toMatch(/CONSOLE_TOKEN/);
-    expect(c.linhas.join("\n")).toMatch(/openssl rand/);
+  it("semear de novo troca a senha e derruba quem estava dentro", async () => {
+    await resetDemoDb(pool, hoje, DESCARTAVEL);
+    const primeira = await credenciais(pool, {});
+    const auth = createAuthStore(pool);
+    const u = (await auth.porEmail(DEMO_EMAIL))!;
+    const { token } = await auth.abrirSessao(u.id, new Date());
+    const segunda = await credenciais(pool, {});
+    expect(segunda.linhas.join()).not.toBe(primeira.linhas.join());
+    expect(await auth.resolverSessao(token, new Date())).toBeNull();
   });
 });
 

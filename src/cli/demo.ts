@@ -15,7 +15,9 @@ import { pathToFileURL } from "node:url";
 import pg from "pg";
 import { fixedClock, todayBrt } from "../adapters/clock.js";
 import { createLockPool, createPool } from "../adapters/db/pool.js";
+import { createAuthStore } from "../adapters/db/auth.js";
 import { applyMigrations } from "../adapters/db/migrations.js";
+import { gerarSenha, hashPassword } from "../core/auth.js";
 import { createPgRepo } from "../adapters/db/repo.js";
 import { FakeAsaas } from "../adapters/fakes/fakeAsaas.js";
 import { FakeOdoo } from "../adapters/fakes/fakeOdoo.js";
@@ -38,6 +40,8 @@ export const DESCRICAO: Record<Cenario, string> = {
 };
 
 /** Documentos fictícios com dígito verificador válido — o Asaas recusa documento inválido. */
+export const DEMO_EMAIL = "demo@exemplo.com.br";
+
 export const DOCS = {
   padaria: "11222333000181",
   transportes: "22333444000181",
@@ -350,13 +354,19 @@ export async function credenciais(pool: ReturnType<typeof createPool>, env: Node
   // /api/v1. A UI em /console chega com a #13.
   const url = `http://localhost:${porta}/api/v1/dashboard`;
   if (existe) {
+    // A tabela existe (filha #13 aplicada): o demo cria o próprio usuário, com senha nova a
+    // cada semeadura. Senha de demonstração é descartável por definição — some no próximo
+    // `npm run demo`, e é por isso que ela pode ser impressa.
+    const senha = gerarSenha(3);
+    const auth = createAuthStore(pool);
+    const u = await auth.criarOuAtualizar({ email: DEMO_EMAIL, name: "Demonstração", passwordHash: await hashPassword(senha) });
+    await auth.revogarDoUsuario(u.id);   // semear de novo derruba quem estava dentro
     return {
       modo: "console_users",
       linhas: [
-        `console:  ${url}`,
-        "usuário:  a tabela console_users existe neste banco. Crie o usuário de demonstração com",
-        '          npm run job -- console-user --email demo@exemplo.com.br --name "Demonstração"',
-        "          (a senha é gerada e impressa uma vez) e entre pela tela de login.",
+        `console:  http://localhost:${porta}/console/`,
+        `usuário:  ${u.email}`,
+        `senha:    ${senha}`,
       ],
     };
   }

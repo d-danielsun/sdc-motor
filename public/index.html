@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Motor de cobrança · SDC</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- Tela de login. Fica visível até GET /me responder 200. -->
+<div id="login" class="login" hidden>
+  <form id="login-form" class="cartao-login" autocomplete="on">
+    <h1>Motor de cobrança</h1>
+    <p class="sub">SDC · console do financeiro</p>
+    <label for="email">E-mail</label>
+    <input id="email" name="email" type="email" autocomplete="username" required autofocus>
+    <label for="senha">Senha</label>
+    <input id="senha" name="password" type="password" autocomplete="current-password" required>
+    <button type="submit" id="btn-entrar">Entrar</button>
+    <p id="login-erro" class="erro" role="alert" hidden></p>
+    <p class="rodape-login">Acesso criado pelo administrador do motor. Senha esquecida se resolve pelo servidor, não por aqui.</p>
+  </form>
+</div>
+
+<div id="app" hidden>
+  <header>
+    <div class="marca">
+      <strong>Motor de cobrança</strong>
+      <span class="cliente">SDC</span>
+    </div>
+    <nav>
+      <a href="#/excecoes" data-rota="excecoes">Exceções <span id="badge-excecoes" class="badge" hidden></span></a>
+      <a href="#/cobrancas" data-rota="cobrancas">Cobranças</a>
+      <a href="#/saude" data-rota="saude">Saúde</a>
+      <a href="#/config" data-rota="config">Configuração</a>
+    </nav>
+    <div class="usuario">
+      <span id="quem"></span>
+      <button id="btn-sair" class="link">sair</button>
+    </div>
+  </header>
+
+  <p id="aviso" class="aviso" role="status" hidden></p>
+
+  <main>
+    <!-- Exceções -->
+    <section id="tela-excecoes" hidden>
+      <div class="filtros">
+        <label>Status
+          <select id="f-exc-status">
+            <option value="open" selected>abertas</option>
+            <option value="resolved">resolvidas</option>
+            <option value="ignored">ignoradas</option>
+            <option value="">todas</option>
+          </select>
+        </label>
+        <label>Tipo <select id="f-exc-tipo"><option value="">todos</option></select></label>
+        <button id="f-exc-recarregar" class="secundario">recarregar</button>
+      </div>
+      <div id="lista-excecoes" class="lista"></div>
+    </section>
+
+    <!-- Cobranças -->
+    <section id="tela-cobrancas" hidden>
+      <div class="filtros">
+        <label>Status <select id="f-cob-status"><option value="">todos</option></select></label>
+        <label>Vence de <input id="f-cob-de" type="date"></label>
+        <label>até <input id="f-cob-ate" type="date"></label>
+        <label>Busca <input id="f-cob-q" type="search" placeholder="fatura, cliente, boleto" maxlength="100"></label>
+        <button id="f-cob-recarregar" class="secundario">recarregar</button>
+      </div>
+      <div id="lista-cobrancas" class="lista"></div>
+    </section>
+
+    <!-- Saúde -->
+    <section id="tela-saude" hidden>
+      <div id="cartoes" class="cartoes"></div>
+      <h2>Vencimentos em aberto</h2>
+      <div id="aging" class="cartoes"></div>
+    </section>
+
+    <!-- Configuração -->
+    <section id="tela-config" hidden>
+      <div id="config" class="config"></div>
+      <div class="bloco-acao">
+        <h2>Notificações do Asaas</h2>
+        <p>Liga o envio de e-mail e SMS do Asaas para <strong>todos</strong> os clientes já sincronizados. O cliente passa a receber cobrança automática.</p>
+        <button id="btn-notificacoes" class="perigo">ligar notificações para todos</button>
+      </div>
+    </section>
+  </main>
+
+  <!-- Detalhe: usado por exceção e por cobrança -->
+  <div id="painel" class="painel" hidden>
+    <div class="painel-caixa" role="dialog" aria-modal="true" aria-labelledby="painel-titulo">
+      <header>
+        <h2 id="painel-titulo"></h2>
+        <button id="painel-fechar" class="link" aria-label="fechar">fechar</button>
+      </header>
+      <div id="painel-corpo"></div>
+    </div>
+  </div>
+
+  <!-- Confirmação em duas etapas para o que não dá para desfazer -->
+  <div id="confirma" class="painel" hidden>
+    <div class="painel-caixa estreito" role="dialog" aria-modal="true" aria-labelledby="confirma-titulo">
+      <header><h2 id="confirma-titulo"></h2></header>
+      <div id="confirma-corpo"></div>
+      <div class="botoes">
+        <button id="confirma-cancelar" class="secundario">cancelar</button>
+        <button id="confirma-ok" class="perigo"></button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

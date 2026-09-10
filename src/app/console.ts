@@ -1,7 +1,17 @@
-// API do console (/api/v1). Auth: Bearer CONSOLE_TOKEN (portátil); no Supabase, o gateway troca por JWT do Auth com a mesma allowlist [Q7].
+// API do console (/api/v1).
+//
+// AUTENTICAÇÃO (fecha a #1). Cookie de sessão de uma PESSOA nas rotas de dados; o
+// `Bearer CONSOLE_TOKEN` sobrevive apenas em POST /jobs/:name, que é o cron externo. Antes
+// disto, `resolved_by` vinha do header `x-user`, que qualquer portador do token escolhia —
+// num motor que mexe em dinheiro isso não é rastro de auditoria, é sugestão. `x-user` deixou
+// de ser lido: quem resolveu é quem estava logado.
+//
 // Envelope de erro único: { ok:false, code, error } — code decide o status.
 import { Hono } from "hono";
 import type { Context } from "hono";
+import { getCookie, setCookie } from "hono/cookie";
+import type { AuthStore, ConsoleUser } from "../adapters/db/auth.js";
+import { FreioDeLogin, isEmail, normalizeEmail, SESSION_TTL_SECONDS, tokenBemFormado, verifyPassword } from "../core/auth.js";
 import type { ConsoleQueries } from "../core/console.js";
 import { CONSOLE_CONFIG_KEYS, type ActionResult, type ErrorCode } from "../core/console.js";
 import type { Deps } from "../core/ports.js";
@@ -10,7 +20,41 @@ import { acceptWriteoff, enableCustomerNotifications, healthReport, isIsoDate, r
 import { safeEqual } from "./server.js";
 
 import type { JobRunner } from "./scheduler.js";
-export interface ConsoleDeps { deps: Deps; queries: ConsoleQueries; token: string | null; jobs?: JobRunner }
+export interface ConsoleDeps {
+  deps: Deps; queries: ConsoleQueries;
+  /** Só abre POST /jobs/:name (cron externo). Não abre mais rota de dados. */
+  token: string | null;
+  jobs?: JobRunner;
+  /** Ausente = login desabilitado (só o cron funciona). */
+  auth?: AuthStore;
+  /** Freio de tentativas injetável para o teste não depender de tempo real. */
+  freio?: FreioDeLogin;
+}
+
+export const SESSION_COOKIE = "sdc_session";
+
+// A pessoa logada viaja no contexto da requisição. Augmentation do ContextVariableMap é o
+// jeito do Hono de tipar isso sem espalhar generic por todo lugar (nem `any`).
+declare module "hono" {
+  interface ContextVariableMap { consoleUser: ConsoleUser }
+}
+
+/** `Secure` quando a requisição chega por https, e nunca desligado fora de loopback: senão o
+ *  dev local e o modo demo não conseguiriam logar, e um host público não pode mandar cookie
+ *  de sessão em claro. */
+export function cookieSeguro(c: Context): boolean {
+  const proto = (c.req.header("x-forwarded-proto") ?? "").split(",")[0]?.trim().toLowerCase();
+  if (proto) return proto === "https";
+  try {
+    return new URL(c.req.url).protocol === "https:";
+  } catch {
+    return true;
+  }
+}
+const LOOPBACK = /^(localhost|127\.0\.0\.1|\[::1\]|::1)(:\d+)?$/i;
+export function ehLoopback(host: string | undefined): boolean {
+  return LOOPBACK.test((host ?? "").trim());
+}
 
 const STATUS_BY_CODE: Record<ErrorCode | "internal" | "unauthorized", number> = { not_found: 404, invalid_state: 409, invalid_input: 400, upstream: 502, config: 500, busy: 409, internal: 500, unauthorized: 401 };
 const EXC_STATUSES = ["open", "resolved", "ignored"] as const;
@@ -29,7 +73,31 @@ const idParam = (v: string): number => { const n = intParam(v, "id", { min: 1 })
 const dateParam = (v: string | undefined, name: string): string | undefined => { if (v === undefined || v === "") return undefined; if (!isIsoDate(v)) throw new BadInput(`${name} deve ser YYYY-MM-DD`); return v; };
 const enumParam = <T extends string>(v: string | undefined, name: string, allowed: readonly T[]): T | undefined => { if (v === undefined || v === "") return undefined; if (!(allowed as readonly string[]).includes(v)) throw new BadInput(`${name} inválido`); return v as T; };
 const send = (c: Context, r: ActionResult) => c.json(r, r.ok ? 200 : (STATUS_BY_CODE[r.code] as 400 | 404 | 409 | 500 | 502));
-const who = (c: Context) => (c.req.header("x-user") ?? "console").replace(/[^\w.@+-]/g, "").slice(0, 64) || "console";   // asserção do cliente — ver README
+/** Quem está agindo: o e-mail da sessão. `x-user` NÃO é mais lido (era asserção do cliente). */
+const who = (c: Context): string => {
+  const u = c.get("consoleUser");
+  return u ? u.email.slice(0, 64) : "cron";
+};
+/** Hash de uma senha que ninguém tem: garante o mesmo custo de scrypt quando o e-mail não
+ *  existe. Gerado uma vez, no carregamento do módulo. */
+const HASH_FALSO = "scrypt$16384$8$1$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+
+const clientIp = (c: Context): string => {
+  const xff = (c.req.header("x-forwarded-for") ?? "").split(",")[0]?.trim();
+  return (xff || c.req.header("x-real-ip") || "local").slice(0, 64);
+};
+
+/** CSRF: um formulário cross-site só consegue mandar form-urlencoded ou multipart. Toda rota
+ *  que muda estado exige JSON, o que um formulário não consegue forjar sem CORS. */
+function exigeJson(c: Context): void {
+  const ct = (c.req.header("content-type") ?? "").split(";")[0]?.trim().toLowerCase();
+  if (ct !== "application/json") throw new BadInput("content-type deve ser application/json");
+}
+function exigeJsonSeTiverCorpo(c: Context): void {
+  const ct = (c.req.header("content-type") ?? "").split(";")[0]?.trim().toLowerCase();
+  if (ct && ct !== "application/json") throw new BadInput("content-type deve ser application/json");
+}
+
 async function jsonObject(c: Context): Promise<Record<string, unknown>> {
   let b: unknown;
   try { b = await c.req.json(); } catch { throw new BadInput("bad json"); }
@@ -45,11 +113,83 @@ export function createConsoleApi(cd: ConsoleDeps): Hono {
     return c.json({ ok: false, code: "internal", error: "internal error" }, 500);
   });
   api.notFound((c) => c.json({ ok: false, code: "not_found", error: "not found" }, 404));
+  // ── sessão ────────────────────────────────────────────────────────────────
+  const freio = cd.freio ?? new FreioDeLogin();
+  const naoAutorizado = (c: Context) => c.json({ ok: false, code: "unauthorized", error: "unauthorized" }, 401);
+
+  api.post("/session", async (c) => {
+    if (!cd.auth) return c.json({ ok: false, code: "config", error: "login do console indisponível: banco sem a migration 0005" }, 503);
+    exigeJson(c);
+    const body = await jsonObject(c);
+    const email = typeof body.email === "string" ? normalizeEmail(body.email) : "";
+    const senha = typeof body.password === "string" ? body.password : "";
+    const agora = cd.deps.clock.now();
+    const ip = clientIp(c);
+    const chaves = [`email:${email}`, `ip:${ip}`];
+
+    if (!email || !senha) throw new BadInput("email e password são obrigatórios");
+    if (freio.bloqueado(chaves, agora)) {
+      cd.deps.log("console: login barrado pelo freio", { email, ip });
+      return c.json({ ok: false, code: "busy", error: "muitas tentativas — espere alguns minutos" }, 429);
+    }
+
+    const u = isEmail(email) ? await cd.auth.porEmail(email) : null;
+    // Mesmo trabalho para e-mail inexistente e senha errada: sem o hash falso, o tempo de
+    // resposta diria quais e-mails existem.
+    const hash = u?.passwordHash ?? HASH_FALSO;
+    const senhaOk = await verifyPassword(senha, hash);
+    if (!u || !u.active || !senhaOk) {
+      freio.registrarFalha(chaves, agora);
+      cd.deps.log("console: login negado", { email, ip });
+      return naoAutorizado(c);
+    }
+
+    freio.limpar(chaves);
+    const s = await cd.auth.abrirSessao(u.id, agora);
+    await cd.auth.marcarLogin(u.id, agora);
+    setCookie(c, SESSION_COOKIE, s.token, {
+      httpOnly: true, sameSite: "Lax", path: "/", maxAge: SESSION_TTL_SECONDS,
+      secure: cookieSeguro(c) || !ehLoopback(c.req.header("host")),
+    });
+    await cd.deps.repo.audit.log({ direction: "asaas_in", endpoint: "console:login", requestSummary: { email: u.email, ip } });
+    return c.json({ ok: true, action: "login", user: { email: u.email, name: u.name }, expiresAt: s.expiresAt.toISOString() });
+  });
+
+  api.delete("/session", async (c) => {
+    const token = getCookie(c, SESSION_COOKIE);
+    if (cd.auth && tokenBemFormado(token)) {
+      const sessao = await cd.auth.resolverSessao(token, cd.deps.clock.now());
+      await cd.auth.fecharSessao(token);
+      if (sessao) await cd.deps.repo.audit.log({ direction: "asaas_in", endpoint: "console:logout", requestSummary: { email: sessao.user.email } });
+    }
+    setCookie(c, SESSION_COOKIE, "", { httpOnly: true, sameSite: "Lax", path: "/", maxAge: 0, secure: cookieSeguro(c) || !ehLoopback(c.req.header("host")) });
+    return c.json({ ok: true, action: "logout" });
+  });
+
+  // Guarda de tudo o que vem depois. A ordem importa: /session já foi registrada acima.
   api.use("*", async (c, next) => {
-    if (!cd.token) return c.json({ ok: false, code: "config", error: "console desabilitado: CONSOLE_TOKEN ausente" }, 503);
-    const auth = c.req.header("authorization") ?? "";
-    if (!safeEqual(auth.startsWith("Bearer ") ? auth.slice(7) : null, cd.token)) return c.json({ ok: false, code: "unauthorized", error: "unauthorized" }, 401);
-    await next();
+    const ehJob = c.req.method === "POST" && /^\/jobs\//.test(new URL(c.req.url).pathname.replace(/^.*\/api\/v1/, ""));
+    const token = getCookie(c, SESSION_COOKIE);
+    if (cd.auth && tokenBemFormado(token)) {
+      const sessao = await cd.auth.resolverSessao(token, cd.deps.clock.now());
+      if (sessao) {
+        c.set("consoleUser", sessao.user);
+        if (c.req.method !== "GET") exigeJsonSeTiverCorpo(c);
+        await next();
+        return;
+      }
+    }
+    // O token compartilhado sobrou para UM caso: o cron externo chamando um job.
+    if (ehJob && cd.token) {
+      const auth = c.req.header("authorization") ?? "";
+      if (safeEqual(auth.startsWith("Bearer ") ? auth.slice(7) : null, cd.token)) { await next(); return; }
+    }
+    return naoAutorizado(c);
+  });
+
+  api.get("/me", async (c) => {
+    const u = c.get("consoleUser");
+    return u ? c.json({ ok: true, user: { email: u.email, name: u.name } }) : naoAutorizado(c);
   });
 
   api.get("/exceptions", async (c) => c.json(await cd.queries.exceptions({

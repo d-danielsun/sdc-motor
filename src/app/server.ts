@@ -1,12 +1,19 @@
 // HTTP do motor. Dois webhooks que respondem 200 rápido e um health. Toda lógica está no núcleo.
 import { createHash, timingSafeEqual } from "node:crypto";
 import { Hono } from "hono";
+import { serveStatic } from "@hono/node-server/serve-static";
 import { bodyLimit } from "hono/body-limit";
 import { normalizeAsaasEvent } from "../core/asaasPayload.js";
 import { RAW_PAYLOAD_MAX } from "../core/limits.js";
 import type { Repo } from "../core/ports.js";
 
-export interface ServerDeps { repo: Repo; asaasWebhookToken: string; odooWebhookKey: string; log: (msg: string, ctx?: Record<string, unknown>) => void; console?: Hono }
+export interface ServerDeps {
+  repo: Repo; asaasWebhookToken: string; odooWebhookKey: string;
+  log: (msg: string, ctx?: Record<string, unknown>) => void;
+  console?: Hono;
+  /** Arquivos da SPA do console. Ausente = não serve nada em /console (Supabase serve pelo CDN). */
+  staticRoot?: string;
+}
 
 /** Comparação em tempo constante por hash: tamanho diferente ou multibyte nunca lança (review 09/09). */
 export const safeEqual = (a: string | undefined | null, b: string): boolean => {
@@ -84,5 +91,15 @@ export function createServer(d: ServerDeps): Hono {
   });
 
   if (d.console) app.route("/api/v1", d.console);
+
+  // SPA do console. Sem build e sem framework: três arquivos estáticos que conversam com a
+  // /api/v1. O redirect existe porque `/console` sem barra faria os caminhos relativos
+  // resolverem para a raiz.
+  if (d.staticRoot) {
+    app.get("/console", (c) => c.redirect("/console/", 302));
+    app.use("/console/*", serveStatic({ root: d.staticRoot, rewriteRequestPath: (p) => p.replace(/^\/console/, "") || "/" }));
+    // Rota do hash router que chega sem arquivo (F5 em /console/qualquer-coisa) cai no index.
+    app.get("/console/*", serveStatic({ root: d.staticRoot, path: "/index.html" }));
+  }
   return app;
 }
