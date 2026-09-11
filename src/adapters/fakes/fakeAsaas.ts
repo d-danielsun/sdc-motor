@@ -54,7 +54,10 @@ export class FakeAsaas implements AsaasClient {
     for (const p of this.payments.values()) {
       if (f.status && p.status !== f.status) continue;
       if (f.paymentDateFrom && (p.paymentDate ?? "") < f.paymentDateFrom) continue;
-      if (f.creditDateFrom && (p.estimatedCreditDate ?? p.creditDate ?? "") < f.creditDateFrom) continue;   // mesmo campo que o cliente real filtra
+      // SÓ `estimatedCreditDate`, porque é só ele que o cliente real manda (`estimatedCreditDate[ge]`).
+      // O fallback para `creditDate` que morava aqui resgatava, no mundo do teste, pagamento que a
+      // API viva não devolveria — o segundo passe da conciliação passava verde escondendo a falha.
+      if (f.creditDateFrom && (p.estimatedCreditDate ?? "") < f.creditDateFrom) continue;
       if (f.externalReference && p.externalReference !== f.externalReference) continue;
       yield { ...p };
     }
@@ -82,7 +85,7 @@ export class FakeAsaas implements AsaasClient {
     if (o.interest) { p.originalValue = p.value; p.interestValue = money(o.interest); p.value = money((Number(p.value) + Number(o.interest)).toFixed(2)); }
     if (o.value) p.value = money(o.value);
     p.status = o.inCash ? "RECEIVED_IN_CASH" : "RECEIVED";
-    p.paymentDate = date; p.clientPaymentDate = date; p.creditDate = date;
+    p.paymentDate = date; p.clientPaymentDate = date; p.creditDate = date; p.estimatedCreditDate = date;
     p.netValue = money((Number(p.value) - 1.99).toFixed(2));
     return this.event("PAYMENT_RECEIVED", p);
   }

@@ -60,7 +60,11 @@ d("filtro por data de crédito (spike do #15)", () => {
     const antigo = await conta({ status: "RECEIVED", creditDateFrom: "2020-01-01" });
     const futuro = await conta({ status: "RECEIVED", creditDateFrom: "2999-01-01" });
     console.log(`   · desde 2020: ${antigo} · desde 2999: ${futuro}`);
+    // O `Math.max(1, antigo)` que morava aqui fazia `0 < 1` passar numa conta de sandbox sem
+    // nenhum pagamento RECEIVED — ou seja, o teste dizia "confirmado" sem ter confirmado nada.
+    // Primeiro a premissa, depois a afirmação.
+    expect(antigo, "conta de sandbox sem pagamento RECEIVED — este teste não prova nada; pague um boleto no sandbox antes").toBeGreaterThan(0);
     // Se o parâmetro fosse ignorado, os dois números seriam iguais.
-    expect(futuro, "o Asaas parece IGNORAR estimatedCreditDate[ge] — o passe por crédito não tem janela").toBeLessThan(Math.max(1, antigo));
+    expect(futuro, "o Asaas parece IGNORAR estimatedCreditDate[ge] — o passe por crédito não tem janela").toBeLessThan(antigo);
   });
 });

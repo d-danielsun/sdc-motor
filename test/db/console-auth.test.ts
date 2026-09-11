@@ -268,13 +268,16 @@ describe("endurecimento pós-verificação", () => {
   });
 
   it("logins simultâneos além do teto levam 429 sem gastar scrypt", async () => {
-    w = await world();
-    const tentativas = Array.from({ length: MAX_LOGINS_SIMULTANEOS + 6 }, () => entrar(USUARIO.email, "errada-de-proposito"));
-    const status = (await Promise.all(tentativas)).map((r) => r.status);
-    // O teto e o freio de 5 tentativas atuam juntos: o que importa é que ninguém fica pendurado
-    // e que a rota se defende em vez de enfileirar trabalho caro.
+    // Freio de tentativas praticamente desligado DE PROPÓSITO: com o freio padrão, as tentativas
+    // 6+ levam o mesmo 429 dele, e o teste passava mesmo com o teto inalcançável (verificado
+    // subindo MAX_LOGINS_SIMULTANEOS para 50 — 21 testes continuavam verdes).
+    w = await world({ freio: new FreioDeLogin(10_000) });
+    const n = MAX_LOGINS_SIMULTANEOS + 6;
+    const status = (await Promise.all(Array.from({ length: n }, () => entrar(USUARIO.email, "errada-de-proposito")))).map((s) => s.status);
     expect(status.every((s) => s === 401 || s === 429)).toBe(true);
-    expect(status.filter((s) => s === 429).length).toBeGreaterThan(0);
+    expect(status.filter((s) => s === 429).length, "o teto de concorrência não recusou ninguém").toBeGreaterThanOrEqual(n - MAX_LOGINS_SIMULTANEOS);
+    // e a recusa foi ANTES do scrypt, que é a metade do título que não era afirmada
+    expect(w.logs.filter((l) => l.msg.includes("recusado por concorrência")).length).toBeGreaterThan(0);
   });
 });
 
