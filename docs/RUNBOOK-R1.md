@@ -54,6 +54,12 @@ npm run db:migrate
 **Confira:** a saída termina em `ok — N applied now`. O motor **recusa subir** num banco sem
 migration aplicada, de propósito: é melhor não subir do que responder erro nos webhooks.
 
+**Migração num motor que JÁ está no ar** (não é o caso na primeira implantação, é o caso de toda
+atualização depois dela): desligue as duas regras de automação no Odoo antes de `db:migrate` e
+religue depois. Migration que cria índice único sobre tabela que recebe webhook aborta se um evento
+novo cair no meio dela, e com a migration pendente o motor recusa subir — deploy travado, motor
+fora do ar. Foi o que a 0008 mostrou. O detalhe está em `db/migrations/down/LEIA-ME.md`, regra 3.
+
 Se o banco for Supabase, use a conexão **direta** (porta 5432), não o pooler em modo transação
 (6543). Os advisory locks do motor precisam de conexão de sessão, e no pooler eles simplesmente
 não funcionam. O motor avisa no boot se detectar isso.
@@ -323,6 +329,7 @@ longa é recuperada pelo reconcile diário, dentro da janela de lookback.
 | `queue_interrupted` | Asaas interrompeu a fila após 15 falhas | O motor já pediu reativação; veja por que o endpoint falhou |
 | `integration_error` | Job falhando (chave vencida, base expirada, banco fora) | O detalhe da exceção tem o erro cru |
 | `stale_heartbeat` | Nenhum pagamento há 8h em horário comercial | Confira no painel do Asaas se houve pagamento hoje |
+| `payment_unmatched` | Pagamento confirmado que o motor não baixou (retries esgotados) | O detalhe traz o erro cru; corrigida a causa, "reprocessar". O watchdog manda e-mail 30 min depois |
 | Baixa não acontece, sem exceção | Chave do Odoo vencida | Etapa 2 de novo; o watchdog avisa a partir de 75 dias |
 
 ## O que este motor deliberadamente NÃO faz

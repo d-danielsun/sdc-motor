@@ -310,3 +310,84 @@ describe("link do console", () => {
     expect(linkDoAlerta(null, 42)).toBeNull();
   });
 });
+
+// ── falha definitiva que ninguém viu (decisão do Dan, 11/09/2026) ────────────
+// O buraco que isto fecha: o alerta de job mora no `catch`, e os workers capturam erro POR ITEM
+// e devolvem contadores — o job nunca estoura. Baixa parada por permissão faltando ficava
+// invisível: evento em `error`, exceção aberta, zero e-mails.
+describe("exceção de falha travada", () => {
+  /** Abre uma exceção e ENVELHECE a linha contra o clock do mundo, nunca contra o `now()` do
+   *  Postgres — o mundo de teste tem relógio fixo, e misturar os dois já quebrou quatro testes. */
+  async function travada(mundo: World, tipo: string, minutos: number) {
+    await mundo.deps.repo.exceptions.open({ type: tipo as never, refTable: "webhook_events", detail: { error: "odoo 403 sem permissão de lançar pagamento" } });
+    const quando = new Date(mundo.deps.clock.now().getTime() - minutos * 60_000);
+    await mundo.pool.query("update exceptions set created_at=$1 where type=$2 and status='open'", [quando, tipo]);
+  }
+
+  it("baixa não feita há mais de 30 min manda e-mail, e o texto diz que o dinheiro entrou", async () => {
+    w = await world();
+    await w.deps.repo.config.set("CONSOLE_PUBLIC_URL", "https://motor.exemplo.com.br");
+    await travada(w, "payment_unmatched", 31);
+    const s = await watchdog(w.deps);
+    expect(s.travadas).toEqual({ payment_unmatched: 1 });
+    expect(s.alertas["travada:payment_unmatched"]).toBe("enviado");
+    const email = w.notify.ultimo!;
+    expect(email.assunto).toBe("Motor SDC: pagamento recebido e NÃO baixado no Odoo");
+    expect(email.corpo).toContain("O dinheiro entrou");
+    expect(email.corpo).toContain("31 minutos");
+    expect(email.corpo).toContain("sem permissão de lançar pagamento");   // a causa mais comum, no corpo
+    expect(email.link, "sem link o e-mail das 3h não leva a lugar nenhum").toMatch(/#\/excecoes\/\d+$/);
+  });
+
+  it("dentro dos 30 min NÃO manda: o transitório tem que poder se curar sozinho", async () => {
+    w = await world();
+    await travada(w, "payment_unmatched", 29);
+    const s = await watchdog(w.deps);
+    expect(s.travadas).toEqual({});
+    expect(w.notify.enviados).toHaveLength(0);
+  });
+
+  it("cinquenta eventos quebrados pela mesma causa são UM e-mail, não cinquenta", async () => {
+    w = await world();
+    for (let i = 0; i < 50; i++) await travada(w, "payment_unmatched", 40);
+    const s = await watchdog(w.deps);
+    expect(s.travadas).toEqual({ payment_unmatched: 50 });
+    expect(w.notify.enviados).toHaveLength(1);
+    expect(w.notify.ultimo!.corpo).toContain("50 exceção(ões)");
+  });
+
+  it("exceção que espera DECISÃO humana não alerta — ela está aberta de propósito", async () => {
+    w = await world();
+    await travada(w, "writeoff_needed", 600);
+    await travada(w, "amount_divergent", 600);
+    await travada(w, "customer_missing_document", 600);
+    const s = await watchdog(w.deps);
+    expect(s.travadas).toEqual({});
+    expect(w.notify.enviados).toHaveLength(0);
+  });
+
+  it("emissão travada e baixa travada são dois e-mails diferentes, cada um com seu texto", async () => {
+    w = await world();
+    await travada(w, "payment_unmatched", 40);
+    await travada(w, "charge_create_failed", 40);
+    const s = await watchdog(w.deps);
+    expect(s.travadas).toEqual({ payment_unmatched: 1, charge_create_failed: 1 });
+    expect(w.notify.enviados).toHaveLength(2);
+    expect(w.notify.enviados.map((e) => e.assunto).sort()).toEqual([
+      "Motor SDC: 1 exceção(ões) de charge_create_failed travada(s)",
+      "Motor SDC: pagamento recebido e NÃO baixado no Odoo",
+    ]);
+    expect(w.notify.enviados.find((e) => e.assunto.includes("charge_create_failed"))!.corpo).toContain("Nenhum");
+  });
+
+  it("segundo tick dentro da janela de 6h não repete, e depois dela repete", async () => {
+    w = await world();
+    await travada(w, "payment_unmatched", 40);
+    await watchdog(w.deps);
+    expect((await watchdog(w.deps)).alertas["travada:payment_unmatched"]).toBe("silenciado");
+    // envelhecer a janela do alerta é o mesmo truque: a linha de `alerts_sent` volta no tempo
+    await w.pool.query("update alerts_sent set sent_at = sent_at - interval '7 hours'");
+    expect((await watchdog(w.deps)).alertas["travada:payment_unmatched"]).toBe("enviado");
+    expect(w.notify.enviados).toHaveLength(2);
+  });
+});

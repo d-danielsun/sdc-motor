@@ -19,6 +19,14 @@ como se perde dado.
 2. **O código volta ANTES do schema.** O motor novo não sobe sem as colunas novas, e o motor
    antigo quebra com elas em alguns casos. Derrube o container, volte a imagem anterior, e só
    então rode o down.
+3. **Índice único sobre tabela que recebe webhook: pare o tráfego antes de migrar.** Vale para
+   aplicar, não para desfazer, e é a regra que a 0008 estabeleceu do jeito difícil. Uma migration
+   que limpa duplicatas e cria índice único na mesma transação aborta se um evento novo cair no
+   meio da limpeza — e como o motor recusa subir com migration pendente, o resultado é deploy
+   travado com o motor fora do ar. Antes de `db:migrate`, desligue as duas regras de automação no
+   Odoo (Etapa 5 do RUNBOOK-R1, ao contrário) e religue depois. A alternativa de código é
+   `create index concurrently` num passo fora da migration — `concurrently` não roda dentro de
+   transação, então isso muda o runner, e por ora a decisão registrada é a regra de operação.
 
 ## Como usar
 

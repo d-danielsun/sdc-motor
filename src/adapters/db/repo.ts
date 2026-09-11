@@ -236,6 +236,21 @@ export function createPgRepo(pool: pg.Pool, lockPool: pg.Pool = pool): Repo {
         const r = await one("select id, type, status, ref_table, ref_id, detail from exceptions where id=$1", [id]);
         return r ? { id: Number(r.id), type: r.type as ExceptionType, status: r.status as "open" | "resolved" | "ignored", refTable: (r.ref_table as string) ?? null, refId: r.ref_id === null ? null : Number(r.ref_id), detail: r.detail } : null;
       },
+      async oldestOpen(types, limite) {
+        // `min(created_at)` numa consulta só: o total e a mais antiga no mesmo snapshot, senão o
+        // texto do e-mail pode dizer "3 exceções, a mais antiga a 2h" com números de instantes
+        // diferentes. `= any($1)` em vez de IN montado em string: nada de SQL concatenado.
+        const r = await one(
+          `select id, type, created_at, (select count(*)::int from exceptions
+                                          where status='open' and type = any($1::text[]) and created_at < $2) as total
+             from exceptions
+            where status='open' and type = any($1::text[]) and created_at < $2
+            order by created_at, id
+            limit 1`,
+          [types, limite],
+        );
+        return r ? { id: Number(r.id), type: r.type as ExceptionType, criadaEm: new Date(r.created_at as string), total: Number(r.total) } : null;
+      },
       async listOpenWithEvent(type) {
         return (await all<{ id: string; ref_table: string; ref_id: string }>(
           `select id, ref_table, ref_id from exceptions
