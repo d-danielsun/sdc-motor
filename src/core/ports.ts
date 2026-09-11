@@ -112,7 +112,11 @@ export interface Repo {
   };
   exceptions: {
     open(e: { type: ExceptionType; refTable?: string; refId?: number; detail?: unknown }): Promise<void>;
-    /** Abre só se não houver outra ABERTA do mesmo tipo/ref — o padrão para quase tudo (varreduras repetem).
+    /** Dedupe de MELHOR ESFORÇO: evita a enxurrada de exceções iguais que uma varredura repetida
+     *  criaria. NÃO é exclusão entre processos — é `insert ... where not exists`, que no READ
+     *  COMMITTED não pega lock de predicado, então dois workers no mesmo instante podem abrir as
+     *  duas (é a mesma armadilha documentada em `alerts.reservar`, que precisou de advisory lock).
+     *  Aqui o custo de duas linhas é ruído no console, não dinheiro, então a trava não se paga.
      *  Devolve o id da exceção ABERTA, criada agora (`nova: true`) ou a que já existia: o alerta
      *  por e-mail precisa do id para linkar o console em qualquer um dos dois casos. */
     openOnce(e: { type: ExceptionType; refTable?: string; refId?: number; detail?: unknown }): Promise<{ id: number; nova: boolean }>;
@@ -135,7 +139,7 @@ export interface Repo {
     reservar(a: { alertKey: string; channel: string; recipients: string; janelaMinutos: number }): Promise<number | null>;
     /** Fecha a linha reservada com o resultado do envio. */
     registrar(id: number, r: { ok: boolean; error?: string | null }): Promise<void>;
-    /** Só para teste e para o console: o que foi mandado, mais recente primeiro. */
+    /** Só para teste: o que foi mandado, mais recente primeiro. Nenhuma tela lê isto ainda. */
     recentes(limit?: number): Promise<Array<{ id: number; alertKey: string; sentAt: Date; ok: boolean; error: string | null; recipients: string }>>;
   };
   audit: {

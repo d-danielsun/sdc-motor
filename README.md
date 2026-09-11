@@ -44,7 +44,7 @@ Container completo (AC14 — a prova de que não depende do Supabase): `docker c
 | `GET /charges?status=a,b&due_from=&due_to=&partner=&q=&limit=&offset=` · `GET /charges/:id` | cobranças com cliente, boleto, conciliação, eventos |
 | `GET /dashboard` | aging das cobranças abertas (a vencer / 1–7 / 8–30 / 31+) |
 | `GET /health-report` | kill switch, régua, abertas, exceções por tipo, último evento/varredura/reconcile/watchdog, fila do Asaas, idade da key |
-| `GET /config` · `PUT /config/:key {value}` | `IDA_ENABLED` (gate R1), `TOLERANCE_BRL` (≤100), `GO_LIVE_CUTOFF_DATE`, `JUROS_MULTA_AUTO`, `RECONCILE_LOOKBACK_DAYS` (1–30) |
+| `GET /config` · `PUT /config/:key {value}` | `IDA_ENABLED` (gate R1), `TOLERANCE_BRL` (≤5,00, teto em `src/core/limits.ts`), `GO_LIVE_CUTOFF_DATE`, `JUROS_MULTA_AUTO`, `RECONCILE_LOOKBACK_DAYS` (1–30) |
 | `POST /customers/enable-notifications` | gate R3: responde **202** e liga a régua em segundo plano, retomável; progresso no `health-report` |
 | `POST /exceptions/requeue-all?type=` | reenfileira em lote os eventos em `error` das exceções abertas daquele tipo; a exceção NÃO é resolvida aqui |
 | `GET /charges?after_due_date=&after_id=` | paginação keyset (os dois juntos); o `offset` continua valendo e é ignorado quando o cursor vem |
@@ -204,8 +204,7 @@ tudo na faixa de mais de 30 dias. Depois de semear, suba o motor apontando para 
 demonstração e opere pelo console. As ações que chamariam Odoo ou Asaas falham como falhariam
 em produção sem acesso, e isso aparece na tela, que é o comportamento esperado.
 
-O login próprio do console chega com a issue #13. Até lá o acesso é pelo `CONSOLE_TOKEN`, e o
-comando imprime a URL e o que usar.
+O comando imprime a URL do console, o usuário de demonstração e uma senha nova a cada semeadura.
 
 ## CI
 
@@ -214,7 +213,7 @@ propósito: filtro de path é como uma suíte morre calada.
 
 - **`ci`** (`.github/workflows/ci.yml`) — job **`test`**: sobe um `postgres:16` de serviço,
   cria o `motor_test`, aplica as migrations nos dois bancos e roda `npm run typecheck` mais
-  os 97 testes (`test/unit` + `test/db` contra Postgres real). Job **`build`**: `docker build`
+  a suíte completa (`test/unit` + `test/db` contra Postgres real). Job **`build`**: `docker build`
   da imagem, que executa `npm run build` no estágio de build. Job **`sandbox`**: só em
   `workflow_dispatch`, toca o sandbox real do Asaas e é pulado com aviso se o segredo
   `ASAAS_SANDBOX_KEY` não estiver cadastrado.

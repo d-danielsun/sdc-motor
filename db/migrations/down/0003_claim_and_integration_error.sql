@@ -1,4 +1,10 @@
 -- Down da 0003. PERDE: locked_at das duas filas e as exceções `integration_error`.
+--
+-- ORDEM IMPORTA: rode os downs do mais NOVO para o mais velho. Este devolve eventos a 'pending',
+-- o que colide com o índice parcial da 0008 se ela ainda estiver aplicada (23505, e o arquivo
+-- inteiro faz rollback). O drop abaixo é a rede de segurança para quem pular a ordem.
+drop index if exists odoo_events_pendente_uniq;
+
 -- Eventos em 'processing' voltam a 'pending' ANTES da constraint antiga, senão ela os rejeita.
 update webhook_events set process_status = 'pending' where process_status = 'processing';
 update odoo_events   set process_status = 'pending' where process_status = 'processing';

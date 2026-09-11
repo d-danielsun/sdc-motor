@@ -1,8 +1,8 @@
 name: ci
 
 # POR QUE ISTO EXISTE. Este motor emite boleto e registra baixa no ERP: um PR que quebra a
-# volta do dinheiro não pode entrar sem ninguém ver. Antes disto os 97 testes rodavam só
-# quando alguém lembrava. Fecha o AC10 da spec do produto (02-SPEC.md).
+# volta do dinheiro não pode entrar sem ninguém ver. Antes disto a suíte rodava só quando
+# alguém lembrava. Fecha o AC10 da spec do produto (02-SPEC.md).
 #
 # Sem `paths:` de propósito: no salvei/site uma suíte ficou 10h sem afirmar nada porque um
 # filtro de path escondeu a quebra (issue #154 de lá). Filtro de path é como uma suíte

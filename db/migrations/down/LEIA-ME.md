@@ -10,6 +10,16 @@ código novo está quebrando, e a decisão é voltar o código. Nesse momento al
 pensar, o que exatamente desfazer — e descobrir isso lendo SQL de trás para frente, às pressas, é
 como se perde dado.
 
+## Duas regras antes de qualquer coisa
+
+1. **Só a ÚLTIMA migration aplicada pode ser desfeita por aqui.** Desfazer uma do meio e apagar a
+   linha dela deixa o runner travado para sempre: a guarda de ordem estrita recusa reaplicá-la e
+   recusa tudo que vier depois. Para desfazer uma anterior, desfaça em cascata da mais nova até
+   ela — ou, melhor, escreva uma migration nova para frente.
+2. **O código volta ANTES do schema.** O motor novo não sobe sem as colunas novas, e o motor
+   antigo quebra com elas em alguns casos. Derrube o container, volte a imagem anterior, e só
+   então rode o down.
+
 ## Como usar
 
 ```bash
@@ -28,7 +38,7 @@ Leia antes de rodar. `drop column` e `drop table` não têm volta.
 
 | Arquivo | O que se perde |
 |---|---|
-| `0008_hardening.sql` | Os tokens de posse em voo (irrelevante: reserva se refaz em 10 min) e os hashes das migrations (o backfill os recria). As notificações do Odoo que a migration colapsou **não** voltam a `pending`. |
+| `0008_hardening.sql` | **Para as duas filas na hora, e o webhook do Odoo junto. Não rode com o motor no ar.** O código referencia `claim_token` sem guarda (`claimSql`/`markSql`/`touchSql`), então todo tick morre com `column "claim_token" does not exist`; e o insert usa `on conflict (odoo_model, odoo_id) where process_status='pending'`, que sem o índice estoura `42P10` e devolve 500 no `/webhook-odoo`. **Volte o CÓDIGO antes do schema.** Também perde os hashes das migrations (o backfill os recria) e não devolve a `pending` as notificações que a migration colapsou. |
 | `0007_alerts_sent.sql` | **Todo o histórico de alertas enviados.** Depois disso, o primeiro tick de cada alerta manda e-mail de novo, porque a janela de silêncio vive nessa tabela. |
 | `0006_audit_console.sql` | Nada de dado; mas linhas de `audit_log` com `direction='console'` passam a violar a constraint restaurada, então elas são **apagadas** primeiro. É trilha de login e logout. |
 | `0005_console_users.sql` | **Todos os usuários e sessões do console.** Ninguém entra até serem recriados por `npm run job -- console-user`. As senhas não são recuperáveis. |

@@ -34,7 +34,7 @@ const app = createServer({
   staticRoot: "./public",
 });
 const scheduler = startScheduler(deps, { runner: jobs });
-const server = serve({ fetch: app.fetch, port: env.PORT }, (info) => jsonLog("motor no ar", { port: info.port, console: env.CONSOLE_TOKEN !== null }));
+const server = serve({ fetch: app.fetch, port: env.PORT }, (info) => jsonLog("motor no ar", { port: info.port, cronToken: env.CONSOLE_TOKEN !== null }));
 let stopping = false;
 for (const sig of ["SIGINT", "SIGTERM"] as const) {
   process.on(sig, () => {

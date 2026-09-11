@@ -10,6 +10,12 @@ export interface NotificationsProgress { total: number; updated: number; failed:
 
 /** Registro único dos tipos de exceção. Estava duplicado no adaptador HTTP; a lista tem que ser a
  *  mesma que a constraint da 0003 aceita, e duas listas divergem em silêncio. */
+/** Mesma razão do EXC_TYPES: estava só no adaptador HTTP, e a lista precisa bater com a
+ *  constraint da 0001. Duas listas divergem em silêncio. */
+export const CHARGE_STATUSES: readonly ChargeStatus[] = [
+  "pending", "created", "confirmed", "received", "settled", "cancelled", "refunded", "exception",
+];
+
 export const EXC_TYPES: readonly ExceptionType[] = [
   "customer_missing_document", "charge_create_failed", "payment_unmatched", "amount_divergent",
   "reversal_pending", "queue_interrupted", "stale_heartbeat", "api_key_expiring",
@@ -71,6 +77,7 @@ export const CONFIG_KEYS = {
   // Endereço público do motor, usado para montar o link do console no e-mail de alerta. Vem do
   // env no boot (CONSOLE_PUBLIC_URL) e mora aqui porque o núcleo não lê env.
   CONSOLE_PUBLIC_URL: null,
+  NOTIFICATIONS_PROGRESS: null,   // escrito pelo job de notificações e lido pelo health-report
 } as const satisfies Record<string, unknown>;
 export type ConfigKey = keyof typeof CONFIG_KEYS;
 /** Chaves que o console pode alterar (gates R1/R3 e defaults até Q3/Q6). */

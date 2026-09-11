@@ -347,12 +347,9 @@ export async function resumir(pool: ReturnType<typeof createPool>, cenario: Cena
  *  Sim, isto imprime um segredo no terminal — de propósito, e é o que a issue pede. É o token
  *  da máquina de quem está demonstrando, e sem ele a instrução não serve para nada. Não rode
  *  o demo com a tela compartilhada usando o token de produção. */
-export async function credenciais(pool: ReturnType<typeof createPool>, env: NodeJS.ProcessEnv): Promise<{ modo: "console_users" | "token"; linhas: string[] }> {
+export async function credenciais(pool: ReturnType<typeof createPool>, env: NodeJS.ProcessEnv): Promise<{ modo: "console_users"; linhas: string[] }> {
   const existe = (await pool.query("select to_regclass('public.console_users') as t")).rows[0]?.t !== null;
   const porta = env.PORT ?? "8787";
-  // A raiz não é servida por ninguém: as rotas do motor são /health, os dois webhooks e
-  // /api/v1. A UI em /console chega com a #13.
-  const url = `http://localhost:${porta}/api/v1/dashboard`;
   if (existe) {
     // A tabela existe (filha #13 aplicada): o demo cria o próprio usuário, com senha nova a
     // cada semeadura. Senha de demonstração é descartável por definição — some no próximo
@@ -370,22 +367,10 @@ export async function credenciais(pool: ReturnType<typeof createPool>, env: Node
       ],
     };
   }
-  const token = env.CONSOLE_TOKEN ?? "";
-  return {
-    modo: "token",
-    linhas: [
-      `console:  ${url}`,
-      ...(token
-        ? [
-            "acesso:   ainda não há login próprio (chega na #13); a API é autenticada pelo token.",
-            `          curl -s -H 'authorization: Bearer ${token}' ${url}`,
-          ]
-        : [
-            "acesso:   defina CONSOLE_TOKEN (≥32 caracteres) antes de subir o motor — sem ele a",
-            "          API do console responde 503. Ex.: export CONSOLE_TOKEN=$(openssl rand -hex 24)",
-          ]),
-    ],
-  };
+  // Não há ramo "sem console_users": `main` roda `garantirBanco` (que aplica a 0005) antes de
+  // chegar aqui, então a tabela sempre existe. O ramo que existia imprimia um contrato morto —
+  // mandava usar `Bearer` no /api/v1, que desde a #13 responde 401.
+  throw new Error("console_users não existe neste banco: rode `npm run db:migrate:demo` antes do demo");
 }
 
 export async function main(argv: string[] = process.argv.slice(2), env: NodeJS.ProcessEnv = process.env): Promise<number> {

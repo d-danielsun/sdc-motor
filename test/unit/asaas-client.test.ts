@@ -18,6 +18,15 @@ describe("AsaasHttpClient", () => {
     expect((err as HttpError).status).toBe(400); expect((err as HttpError).transient).toBe(false);
     await expect(client([() => res(200, JSON.stringify({ object: "payment" }))]).getPayment("pay_1")).rejects.toThrow(/sem id\/value/);
   });
+  it("creditDateFrom vira estimatedCreditDate[ge] na query (é o filtro do 2º passe do reconcile)", async () => {
+    // O nome do parâmetro veio da documentação. O teste vivo contra o sandbox confirma que o
+    // Asaas o RESPEITA; este aqui, grátis e em todo PR, garante que continuamos EMITINDO ele.
+    let url = "";
+    const c = client([(u) => { url = u; return res(200, JSON.stringify({ data: [], hasMore: false })); }]);
+    for await (const _ of c.listPayments({ status: "RECEIVED", creditDateFrom: "2026-09-17" })) break;
+    expect(url).toContain("estimatedCreditDate%5Bge%5D=2026-09-17");
+    expect(url).not.toContain("creditDate%5Bge%5D=2026");   // o campo do crédito efetivado não é filtrável
+  });
   it("ids com caractere de path nunca chegam à URL", async () => {
     let called = false;
     const c = client([() => { called = true; return res(200, "{}"); }]);

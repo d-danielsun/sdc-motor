@@ -12,6 +12,45 @@ beforeAll(async () => {
 });
 afterEach(async () => { const atual = w; w = undefined; await atual?.close(); });
 
+/** Espera o trabalho que a rota disparou terminar, lendo o progresso que ELE grava. É a única
+ *  forma de afirmar o disparo sem rodar o caso de uso pelo teste — que é o que o mascarava. */
+async function esperarProgresso(w: World, ate = 5000): Promise<Record<string, unknown> | null> {
+  const limite = Date.now() + ate;
+  for (;;) {
+    const p = (await w.deps.repo.config.get("NOTIFICATIONS_PROGRESS")) as Record<string, unknown> | null;
+    if (p?.ok === true || Date.now() > limite) return p;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}
+
+// ── #6: o ramo da reserva PERDIDA, dentro do worker ──────────────────────────
+// O teste acima cobre a primitiva (`mark` devolvendo false). Este cobre o que o worker FAZ com
+// esse false — que é o motivo inteiro da 0008 existir e o único lugar onde ele importa: não
+// contar como processado, não sobrescrever a baixa de quem assumiu, e deixar rastro.
+describe("worker que voltou depois do TTL (#6)", () => {
+  it("não conta, não sobrescreve e registra a reserva perdida", async () => {
+    w = await world();
+    const { processAsaasEvents } = await import("../../src/core/index.js");
+    const id = (await w.deps.repo.asaasEvents.insert({ asaasEventId: "e-perdida", eventType: "PAYMENT_RECEIVED", asaasPaymentId: "pay_x", payload: {} }))!;
+
+    const [velho] = await w.deps.repo.asaasEvents.pending(10, w.deps.clock.now());
+    // TTL estourado contra o clock do MUNDO (fixo), nunca contra o now() do Postgres.
+    await w.pool.query("update webhook_events set locked_at = $2 where id=$1", [id, new Date(w.deps.clock.now().getTime() - 20 * 60_000)]);
+    const [novo] = await w.deps.repo.asaasEvents.pending(10, w.deps.clock.now());
+    expect(await w.deps.repo.asaasEvents.mark(id, "done", { claimToken: novo!.claimToken })).toBe(true);
+
+    // o worker velho acorda e roda o laço com a reserva que já não é dele
+    const original = w.deps.repo.asaasEvents.pending;
+    w.deps.repo.asaasEvents.pending = async () => [velho!];
+    const out = await processAsaasEvents(w.deps);
+    w.deps.repo.asaasEvents.pending = original;
+
+    expect(out.done + out.ignored + out.errors, "contou um evento que não era mais dele").toBe(0);
+    expect((await w.pool.query("select process_status from webhook_events where id=$1", [id])).rows[0].process_status).toBe("done");
+    expect(w.logs.some((l) => l.msg.includes("reserva perdida"))).toBe(true);
+  });
+});
+
 // ── #6: token de posse na reserva ────────────────────────────────────────────
 describe("token de posse na reserva de evento (#6)", () => {
   it("a reserva devolve um token, e o mark com token velho NÃO sobrescreve (AC2)", async () => {
@@ -128,12 +167,27 @@ describe("reenfileirar em lote (#5)", () => {
 
     // pago há 10 dias (fora do lookback de 3), creditado ontem (dentro)
     w.asaas.confirm(pay.id, { paymentDate: "2026-09-10" });
-    w.asaas.setStatus(pay.id, "RECEIVED", { creditDate: "2026-09-19" });
+    w.asaas.setStatus(pay.id, "RECEIVED", { creditDate: "2026-09-19", estimatedCreditDate: "2026-09-19" });
 
     const s = await reconcileDaily(w.deps, { lookbackDays: 3 });
     expect(s.byCreditDate).toBe(1);
     expect(s.received).toBe(1);
     expect(Number((await w.pool.query("select count(*)::int as n from reconciliations")).rows[0].n)).toBe(1);
+  });
+
+  it("crédito SEM estimatedCreditDate não é resgatado — é o que a API viva faz, e o fake mentia", async () => {
+    // O cliente real filtra `estimatedCreditDate[ge]` e mais nada. Enquanto o fake caía para
+    // `creditDate`, o teste acima passava por um caminho que não existe em produção. Este teste
+    // existe para o buraco ficar VISÍVEL na suíte em vez de escondido: se um dia a conciliação
+    // passar a filtrar por `creditDate` de verdade, é aqui que a mudança aparece.
+    w = await world({ today: "2026-09-20" });
+    seedInvoice(w);
+    const { syncInvoices } = await import("../../src/core/index.js");
+    await syncInvoices(w.deps);
+    const pay = [...w.asaas.payments.values()][0]!;
+    w.asaas.confirm(pay.id, { paymentDate: "2026-09-10" });
+    w.asaas.setStatus(pay.id, "RECEIVED", { creditDate: "2026-09-19", estimatedCreditDate: null });
+    expect((await reconcileDaily(w.deps, { lookbackDays: 3 })).byCreditDate).toBe(0);
   });
 
   it("o mesmo pagamento nos dois passes é contado uma vez só", async () => {
@@ -143,7 +197,7 @@ describe("reenfileirar em lote (#5)", () => {
     await syncInvoices(w.deps);
     const pay = [...w.asaas.payments.values()][0]!;
     w.asaas.confirm(pay.id, { paymentDate: "2026-09-19" });   // dentro das DUAS janelas
-    w.asaas.setStatus(pay.id, "RECEIVED", { creditDate: "2026-09-19" });
+    w.asaas.setStatus(pay.id, "RECEIVED", { creditDate: "2026-09-19", estimatedCreditDate: "2026-09-19" });
 
     const s = await reconcileDaily(w.deps, { lookbackDays: 3 });
     expect(s.received).toBe(1);
@@ -218,11 +272,12 @@ describe("console tipado e paginação (#8)", () => {
     expect(r.status).toBe(202);
     expect(r.body).toMatchObject({ ok: true, action: "notifications_enabling", detail: { total: 1 } });
 
-    // o trabalho roda em segundo plano; aqui exercitamos o caso de uso direto para afirmar o fim
-    const p = await enableCustomerNotifications(w.deps);
-    expect(p).toMatchObject({ total: 1, updated: 1, failed: 0, ok: true });
-    expect(await w.deps.repo.config.get("NOTIFICATIONS_PROGRESS")).toMatchObject({ total: 1, updated: 1, ok: true });
+    // NADA de chamar o caso de uso aqui. Chamar era o que deixava o teste verde mesmo com a
+    // linha do disparo apagada da rota: o 202 prometia e o teste cumpria a promessa sozinho.
+    const p = await esperarProgresso(w);
+    expect(p, "a rota respondeu 202 e não disparou trabalho nenhum").toMatchObject({ total: 1, updated: 1, failed: 0, ok: true });
     expect((await w.api("/health-report")).body.notificationsProgress).toMatchObject({ ok: true, updated: 1 });
+    expect([...w.asaas.customers.values()][0]!.notificationDisabled).toBe(false);
   });
 
   it("retomar não rechama o Asaas para quem já está ligado", async () => {
@@ -345,9 +400,16 @@ describe("achados do verificador (#15)", () => {
     const { applyMigrations } = await import("../../src/adapters/db/migrations.js");
     // `if exists` porque uma rodada anterior pode ter deixado a coluna caída: teste que só passa
     // em banco limpo é teste que falha quando mais importa.
+    // `schema_migrations` fica FORA do truncate do `world()` de propósito, então esta é a única
+    // mutação de teste que sobrevive ao próprio teste — o finally é o que impede que uma falha
+    // aqui deixe o `motor_test` numa forma pré-0008 para todo mundo que apontar pra ele.
     await w.pool.query("alter table schema_migrations drop column if exists content_sha256");
-    await expect(applyMigrations(w.pool)).resolves.toEqual([]);
-    const n = Number((await w.pool.query("select count(*)::int as n from schema_migrations where content_sha256 is null")).rows[0].n);
-    expect(n, "o backfill não preencheu os hashes").toBe(0);
+    try {
+      await expect(applyMigrations(w.pool)).resolves.toEqual([]);
+      const n = Number((await w.pool.query("select count(*)::int as n from schema_migrations where content_sha256 is null")).rows[0].n);
+      expect(n, "o backfill não preencheu os hashes").toBe(0);
+    } finally {
+      await w.pool.query("alter table schema_migrations add column if not exists content_sha256 text");
+    }
   });
 });

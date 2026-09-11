@@ -96,15 +96,14 @@ describe("adaptador do Resend", () => {
 });
 
 describe("canal no-op", () => {
-  it("sem chave, registra que teria mandado e NÃO lança (AC1)", async () => {
-    const linhas: Array<{ msg: string; ctx?: Record<string, unknown> }> = [];
-    const n = createNoopNotifier((msg, ctx) => linhas.push({ msg, ctx }), "RESEND_API_KEY ausente");
+  it("sem chave: canal inativo, não lança, e NÃO loga (quem loga é o núcleo) (AC1)", async () => {
+    const n = createNoopNotifier(() => {}, "RESEND_API_KEY ausente");
     await expect(n.entregar({ assunto: "fila parada", corpo: "x", link: null })).resolves.toBeUndefined();
     expect(n.canal).toBe("no-op");
-    expect(n.ativo).toBe(false);   // é o que faz o núcleo nem reservar janela
+    // `ativo: false` faz o núcleo devolver "sem_canal" ANTES de chamar entregar, e é lá que o
+    // alerta suprimido é registrado. Dois lugares donos do mesmo log foi o que gerou drift.
+    expect(n.ativo).toBe(false);
     expect(n.destinatarios).toEqual([]);
-    expect(linhas[0]?.msg).toContain("no-op");
-    expect(linhas[0]?.ctx).toMatchObject({ motivo: "RESEND_API_KEY ausente", assunto: "fila parada" });
   });
 });
 

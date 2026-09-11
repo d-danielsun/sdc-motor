@@ -179,7 +179,16 @@ export function createPgRepo(pool: pg.Pool, lockPool: pg.Pool = pool): Repo {
         }
       },
       async touch(id, now, claimToken) { return ((await db.query(touchSql("odoo_events"), [id, now, claimToken ?? null])).rowCount ?? 0) > 0; },
-      async reset(id) { await db.query(resetSql("odoo_events"), [id]); },
+      async reset(id) {
+        // Mesma tradução de `mark`/`requeueFromError`: sem ela, o botão "reprocessar" do console
+        // devolvia 500 opaco quando já havia outra notificação pendente da mesma fatura — que é
+        // justo o caso que a 0008 tornou comum. Achado pelo especialista de migration.
+        try { await db.query(resetSql("odoo_events"), [id]); }
+        catch (e) {
+          if (isUniqueViolation(e, "odoo_events_pendente_uniq")) throw new FilaJaTemPendente(`já existe notificação pendente para a mesma fatura (evento ${id})`);
+          throw e;
+        }
+      },
       async requeueFromError(id) {
         try {
           return ((await db.query(`${resetSql("odoo_events")} and process_status='error'`, [id])).rowCount ?? 0) > 0;

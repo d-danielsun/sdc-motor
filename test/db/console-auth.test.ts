@@ -268,12 +268,53 @@ describe("endurecimento pós-verificação", () => {
   });
 
   it("logins simultâneos além do teto levam 429 sem gastar scrypt", async () => {
-    w = await world();
-    const tentativas = Array.from({ length: MAX_LOGINS_SIMULTANEOS + 6 }, () => entrar(USUARIO.email, "errada-de-proposito"));
-    const status = (await Promise.all(tentativas)).map((r) => r.status);
-    // O teto e o freio de 5 tentativas atuam juntos: o que importa é que ninguém fica pendurado
-    // e que a rota se defende em vez de enfileirar trabalho caro.
+    // Freio de tentativas praticamente desligado DE PROPÓSITO: com o freio padrão, as tentativas
+    // 6+ levam o mesmo 429 dele, e o teste passava mesmo com o teto inalcançável (verificado
+    // subindo MAX_LOGINS_SIMULTANEOS para 50 — 21 testes continuavam verdes).
+    w = await world({ freio: new FreioDeLogin(10_000) });
+    const n = MAX_LOGINS_SIMULTANEOS + 6;
+    const status = (await Promise.all(Array.from({ length: n }, () => entrar(USUARIO.email, "errada-de-proposito")))).map((s) => s.status);
     expect(status.every((s) => s === 401 || s === 429)).toBe(true);
-    expect(status.filter((s) => s === 429).length).toBeGreaterThan(0);
+    expect(status.filter((s) => s === 429).length, "o teto de concorrência não recusou ninguém").toBeGreaterThanOrEqual(n - MAX_LOGINS_SIMULTANEOS);
+    // e a recusa foi ANTES do scrypt, que é a metade do título que não era afirmada
+    expect(w.logs.filter((l) => l.msg.includes("recusado por concorrência")).length).toBeGreaterThan(0);
+  });
+});
+
+describe("CSRF nas rotas que mudam estado (review #15)", () => {
+  it("POST sem content-type é recusado, inclusive sem corpo", async () => {
+    w = await world();
+    await w!.deps.repo.exceptions.open({ type: "stale_heartbeat", refTable: "webhook_events" });
+    const ex = (await w!.api("/exceptions?status=open")).body.data[0];
+    const pedir = (extra: Record<string, string>) => w!.app().request(`/api/v1/exceptions/${ex.id}/resolve`, {
+      method: "POST", headers: { cookie: `sdc_session=${w!.sessao}`, ...extra },
+    });
+
+    // O FURO: as ações do console não mandam corpo, e POST sem corpo não tem content-type. A
+    // guarda só checava o header quando ele existia, então passava direto — reproduzido pelo
+    // Codex contra o HEAD, com `accept-writeoff` devolvendo 200 e uma baixa.
+    expect((await pedir({})).status, "POST sem content-type passou").toBe(400);
+    expect((await pedir({ "content-type": "application/x-www-form-urlencoded" })).status).toBe(400);
+
+    // Segunda camada: o navegador diz de onde veio, e `same-site` (subdomínio irmão) é justo o
+    // caso em que o SameSite=Lax do cookie NÃO protege.
+    expect((await pedir({ "content-type": "application/json", "sec-fetch-site": "cross-site" })).status).toBe(400);
+    expect((await pedir({ "content-type": "application/json", "sec-fetch-site": "same-site" })).status).toBe(400);
+    expect((await pedir({ "content-type": "application/json", origin: "https://outro.exemplo.com.br", host: "motor.exemplo.com.br" })).status).toBe(400);
+
+    // a exceção não foi tocada por nenhuma das tentativas
+    expect((await w!.api(`/exceptions/${ex.id}`)).body.status).toBe("open");
+    // e a SPA (same-origin, json) continua funcionando
+    expect((await pedir({ "content-type": "application/json", "sec-fetch-site": "same-origin" })).status).toBe(200);
+  });
+
+  it("o cron externo não manda sec-fetch-site e continua passando", async () => {
+    w = await world();
+    expect((await w!.api("/jobs/watchdog", { method: "POST" }, { cookie: null, bearer: CONSOLE_TOKEN })).status).toBe(200);
+    // mas um navegador de outro site, com a sessão, não dispara job
+    const deOutroSite = await w!.app().request("/api/v1/jobs/watchdog", {
+      method: "POST", headers: { cookie: `sdc_session=${w!.sessao}`, "sec-fetch-site": "cross-site" },
+    });
+    expect(deOutroSite.status).toBe(400);
   });
 });

@@ -18,8 +18,8 @@ export async function processOdooEvents(deps: Deps, o: { limit?: number } = {}):
       if (!handled.has(ev.odooId)) {
         const inv = await odoo.getInvoice(ev.odooId);
         if (!inv || inv.moveType !== "out_invoice") { await repo.odooEvents.mark(ev.id, "ignored", posse); out.ignored++; continue; }
-        const o = await handleInvoice(deps, inv);
-        if (o.busy) throw Object.assign(new Error("fatura em uso por outra execução"), { transient: true });   // volta pra fila com backoff
+        const resultado = await handleInvoice(deps, inv);
+        if (resultado.busy) throw Object.assign(new Error("fatura em uso por outra execução"), { transient: true });   // volta pra fila com backoff
         handled.add(ev.odooId);
       }
       const meu = await repo.odooEvents.mark(ev.id, "done", posse);

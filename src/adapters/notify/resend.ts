@@ -60,8 +60,8 @@ export function createNoopNotifier(log: Logger, motivo: string): Notifier {
     canal: "no-op",
     ativo: false,
     destinatarios: [],
-    async entregar(a) {
-      log("alerta NÃO enviado (canal no-op)", { motivo, assunto: a.assunto });
-    },
+    // Não loga: quem registra o alerta suprimido é o núcleo (`alertar` devolve "sem_canal" antes
+    // de chegar aqui, porque `ativo` é false). Dois lugares donos do mesmo log é o que dá drift.
+    async entregar() {},
   };
 }

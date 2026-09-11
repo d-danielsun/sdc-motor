@@ -120,3 +120,33 @@ describe("SPA do console", () => {
     expect(html).not.toMatch(/<(script|link)[^>]+(https?:)?\/\//);
   });
 });
+
+describe("o atributo hidden precisa ganhar da cascata (review #15)", () => {
+  it("existe uma regra [hidden] que vence as classes com display", () => {
+    // O BUG QUE ISTO PEGA, e que nenhum outro teste pegava: `hidden` só esconde porque a folha
+    // do NAVEGADOR diz `[hidden]{display:none}`, e qualquer regra nossa de `display` ganha dela.
+    // `.login` e `.painel` setam `display:grid`, então a tela de login, o painel de detalhe VAZIO
+    // e o diálogo de confirmação com um botão vermelho em branco apareciam todos ao mesmo tempo,
+    // desde o primeiro pixel — e todo `el.hidden = true` do app.js era inerte. Achado pela review
+    // de design; invisível para teste que não renderiza, e é por isso que este é estático.
+    // Comentários fora: o comentário que explica o bug cita `[hidden]{display:none}` e casaria
+    // com o regex, fazendo o teste passar sem a regra existir.
+    const cssSemComentario = css.replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(cssSemComentario, "falta `[hidden] { display: none !important }` no style.css").toMatch(/\[hidden\]\s*\{[^}]*display:\s*none/);
+
+    // e a regra tem que vir com !important, senão uma classe com display continua ganhando
+    const regra = /\[hidden\]\s*\{([^}]*)\}/.exec(cssSemComentario)?.[1] ?? "";
+    expect(regra, "a regra [hidden] sem !important perde de .painel/.login").toContain("!important");
+  });
+
+  it("todo elemento com hidden no HTML está coberto pela regra", () => {
+    // Lista os ids que nascem com `hidden` e as classes deles: se alguma classe setar display e a
+    // regra acima desaparecer, o teste anterior quebra. Este documenta quem depende dela.
+    const comHidden = [...html.matchAll(/<div id="([^"]+)"[^>]*class="([^"]*)"[^>]*\shidden/g)].map((m) => [m[1], m[2]]);
+    expect(comHidden.length, "nenhum elemento com hidden — o HTML mudou de forma").toBeGreaterThanOrEqual(2);
+    for (const [id, classe] of comHidden) {
+      const temDisplay = new RegExp(`\\.${classe?.split(" ")[0]}\\s*\\{[^}]*display:`).test(css);
+      if (temDisplay) expect(css.replace(/\/\*[\s\S]*?\*\//g, ""), `#${id} (.${classe}) seta display e depende da regra [hidden]`).toMatch(/\[hidden\]/);
+    }
+  });
+});
