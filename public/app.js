@@ -32,6 +32,19 @@ const el = (tag, props = {}, filhos = []) => {
 };
 const limpar = (n) => { while (n.firstChild) n.removeChild(n.firstChild); return n; };
 
+/** Linha de lista que se comporta como botão. Um `div` com onclick é invisível para o teclado:
+ *  não recebe Tab, não responde a Enter, e o leitor de tela não diz que dá para acionar. Quem
+ *  opera a fila de exceções o dia inteiro navega por teclado, e sem isto precisa do mouse para
+ *  CADA exceção. `role`/`tabindex` em vez de um <button> de verdade porque a linha tem estrutura
+ *  dentro (duas fileiras, etiquetas), e botão com bloco dentro é HTML inválido. */
+const itemClicavel = (props, filhos, aoAbrir) => el("div", {
+  ...props,
+  role: "button",
+  tabindex: "0",
+  onclick: aoAbrir,
+  onkeydown: (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); aoAbrir(); } },
+}, filhos);
+
 /** `href` é o único atributo em que dado do servidor não é texto: um `javascript:` vindo de
  *  um boleto viraria execução no clique. Só http(s) passa. */
 const urlSegura = (v) => (typeof v === "string" && /^https?:\/\//i.test(v) ? v : null);
@@ -225,7 +238,7 @@ async function carregarExcecoes() {
       el("span", { texto: `aberta ${quando(e.createdAt)}` }),
       e.resolvedBy ? el("span", { texto: `por ${e.resolvedBy}` }) : null,
     ]);
-    lista.appendChild(el("div", { class: "item", onclick: () => abrirExcecao(e.id) }, [linha1, meta]));
+    lista.appendChild(itemClicavel({ class: "item" }, [linha1, meta], () => abrirExcecao(e.id)));
   }
   lista.appendChild(paginacao("excecoes", p, carregarExcecoes));
 }
@@ -243,6 +256,11 @@ function paginacao(chave, p, recarregar) {
 
 async function abrirExcecao(id) {
   const e = await api(`/exceptions/${id}`);
+  // A URL acompanha o que está na tela: dá para copiar o link do que se está vendo, F5 volta
+  // para cá, e o botão voltar fecha o painel. `replaceState` porque `location.hash =` acordaria
+  // o roteador e reabriria este mesmo painel. O `fecharPainel` já limpava este id — só que
+  // ninguém o escrevia, então a metade de saída do deep-link nunca existiu.
+  if (location.hash !== `#/excecoes/${e.id}`) history.replaceState(null, "", `#/excecoes/${e.id}`);
   const [rotulo, cor] = TIPOS[e.type] ?? [e.type, "cinza"];
   const corpo = limpar($("painel-corpo"));
   $("painel-titulo").textContent = `Exceção #${e.id}`;
@@ -329,7 +347,7 @@ async function carregarCobrancas() {
       el("span", { texto: `vence ${data(ch.dueDate)}` }),
       ch.received ? el("span", { texto: `recebido ${dinheiro(ch.received.amountReceived)} em ${data(ch.received.paymentDate)}` }) : null,
     ]);
-    const item = el("div", { class: "item", onclick: () => abrirCobranca(ch.id) }, [linha1, meta]);
+    const item = itemClicavel({ class: "item" }, [linha1, meta], () => abrirCobranca(ch.id));
     const boleto = urlSegura(ch.bankSlipUrl);
     if (boleto) {
       // O clique no boleto não pode abrir o detalhe junto.
@@ -513,22 +531,48 @@ function fecharPainel() {
   if (partes.length > 1) history.replaceState(null, "", `#/${partes[0]}`);
 }
 
+/** O diálogo de confirmação. Ele é dono do teclado enquanto está aberto — é isso que impede
+ *  dois acidentes que o QA reproduziu no navegador:
+ *
+ *  1. Escape fechava o PAINEL debaixo (o listener global) e deixava o diálogo órfão sobre a
+ *     lista, com a promessa nunca resolvida. O botão "aceitar e baixar" continuava vivo, e
+ *     clicá-lo disparava a baixa no ERP de uma exceção que o operador acabara de dispensar.
+ *     Confirmação de escrita irreversível não pode sobreviver ao gesto de cancelar.
+ *  2. Tab saía do diálogo na primeira parada e passeava pela página atrás dele, que está
+ *     coberta — o teclado ia para onde o olho não vai. */
 function confirmar(titulo, texto, rotuloBotao) {
   return new Promise((resolve) => {
+    const caixa = $("confirma");
     $("confirma-titulo").textContent = titulo;
     limpar($("confirma-corpo")).appendChild(el("p", { texto }));
     const ok = $("confirma-ok");
+    const cancelar = $("confirma-cancelar");
     ok.textContent = rotuloBotao;
+    const antes = document.activeElement;
+    const teclado = (ev) => {
+      if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); fim(false); return; }
+      if (ev.key !== "Tab") return;
+      // Ciclo fechado entre os dois botões: o foco não sai do diálogo enquanto ele decide algo.
+      const foco = [cancelar, ok];
+      const i = foco.indexOf(document.activeElement);
+      const proximo = ev.shiftKey ? (i <= 0 ? foco.length - 1 : i - 1) : (i === foco.length - 1 ? 0 : i + 1);
+      ev.preventDefault();
+      foco[proximo].focus();
+    };
     const fim = (v) => {
-      $("confirma").hidden = true;
+      caixa.hidden = true;
       ok.onclick = null;
-      $("confirma-cancelar").onclick = null;
+      cancelar.onclick = null;
+      document.removeEventListener("keydown", teclado, true);
+      if (antes && antes.isConnected) antes.focus();
       resolve(v);
     };
     ok.onclick = () => fim(true);
-    $("confirma-cancelar").onclick = () => fim(false);
-    $("confirma").hidden = false;
-    $("confirma-cancelar").focus();
+    cancelar.onclick = () => fim(false);
+    // Captura: chega antes do Escape global que fecha o painel, e para nele.
+    document.addEventListener("keydown", teclado, true);
+    caixa.hidden = false;
+    cancelar.focus();
   });
 }
 
@@ -554,7 +598,9 @@ function ligarEventos() {
   $("btn-sair").addEventListener("click", sair);
   $("painel-fechar").addEventListener("click", fecharPainel);
   $("painel").addEventListener("click", (e) => { if (e.target === $("painel")) fecharPainel(); });
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape") fecharPainel(); });
+  // O diálogo de confirmação come o Escape antes daqui (listener em captura). Esta guarda é a
+  // segunda linha: fechar o painel debaixo de uma confirmação aberta é o que a deixava órfã.
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("confirma").hidden) fecharPainel(); });
   window.addEventListener("hashchange", () => { void rotear(); });
   for (const [id, chave, recarregar] of [["f-exc-status", "excecoes", carregarExcecoes], ["f-exc-tipo", "excecoes", carregarExcecoes], ["f-cob-status", "cobrancas", carregarCobrancas]]) {
     $(id).addEventListener("change", () => { pagina[chave] = 0; void recarregar().catch((e) => { if (e.status !== 401) aviso(e.message, true); }); });
