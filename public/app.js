@@ -42,7 +42,13 @@ const itemClicavel = (props, filhos, aoAbrir) => el("div", {
   role: "button",
   tabindex: "0",
   onclick: aoAbrir,
-  onkeydown: (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); aoAbrir(); } },
+  // `ev.target === ev.currentTarget`: o keydown de um filho BORBULHA até aqui. Sem esta guarda,
+  // Enter no link "abrir boleto" abria o painel da linha em vez do PDF — o `preventDefault` daqui
+  // matava a ativação do link. Clique não tinha o problema (o link já para a propagação dele).
+  onkeydown: (ev) => {
+    if (ev.target !== ev.currentTarget) return;
+    if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); aoAbrir(); }
+  },
 }, filhos);
 
 /** `href` é o único atributo em que dado do servidor não é texto: um `javascript:` vindo de
@@ -540,7 +546,12 @@ function fecharPainel() {
  *     Confirmação de escrita irreversível não pode sobreviver ao gesto de cancelar.
  *  2. Tab saía do diálogo na primeira parada e passeava pela página atrás dele, que está
  *     coberta — o teclado ia para onde o olho não vai. */
+/** Cancela a confirmação aberta, se houver. Existe porque o diálogo precisa morrer junto com o
+ *  contexto dele: fechar pelo Escape era só UM dos jeitos de sair da tela. */
+let cancelarConfirmacao = null;
+
 function confirmar(titulo, texto, rotuloBotao) {
+  cancelarConfirmacao?.();   // duas confirmações abertas ao mesmo tempo seria pior ainda
   return new Promise((resolve) => {
     const caixa = $("confirma");
     $("confirma-titulo").textContent = titulo;
@@ -563,10 +574,12 @@ function confirmar(titulo, texto, rotuloBotao) {
       caixa.hidden = true;
       ok.onclick = null;
       cancelar.onclick = null;
+      cancelarConfirmacao = null;
       document.removeEventListener("keydown", teclado, true);
       if (antes && antes.isConnected) antes.focus();
       resolve(v);
     };
+    cancelarConfirmacao = () => fim(false);
     ok.onclick = () => fim(true);
     cancelar.onclick = () => fim(false);
     // Captura: chega antes do Escape global que fecha o painel, e para nele.
@@ -595,13 +608,17 @@ function popularFiltros() {
 
 function ligarEventos() {
   $("login-form").addEventListener("submit", entrar);
-  $("btn-sair").addEventListener("click", sair);
+  $("btn-sair").addEventListener("click", () => { cancelarConfirmacao?.(); void sair(); });
   $("painel-fechar").addEventListener("click", fecharPainel);
   $("painel").addEventListener("click", (e) => { if (e.target === $("painel")) fecharPainel(); });
   // O diálogo de confirmação come o Escape antes daqui (listener em captura). Esta guarda é a
   // segunda linha: fechar o painel debaixo de uma confirmação aberta é o que a deixava órfã.
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("confirma").hidden) fecharPainel(); });
-  window.addEventListener("hashchange", () => { void rotear(); });
+  // Trocar de tela (menu, voltar do navegador, link do e-mail) CANCELA a confirmação aberta. Sem
+  // isto ela sobrevivia à navegação: o diálogo "ligar notificações para todos" continuava sobre
+  // outra tela, e clicar nele disparava a ação de um contexto que já não estava à vista. É o
+  // mesmo buraco do Escape, pela outra porta — achado do review adversarial do Codex.
+  window.addEventListener("hashchange", () => { cancelarConfirmacao?.(); void rotear(); });
   for (const [id, chave, recarregar] of [["f-exc-status", "excecoes", carregarExcecoes], ["f-exc-tipo", "excecoes", carregarExcecoes], ["f-cob-status", "cobrancas", carregarCobrancas]]) {
     $(id).addEventListener("change", () => { pagina[chave] = 0; void recarregar().catch((e) => { if (e.status !== 401) aviso(e.message, true); }); });
   }

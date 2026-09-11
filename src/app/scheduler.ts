@@ -30,7 +30,12 @@ export async function runJob(deps: Deps, name: JobName, extras: JobExtras = {}):
     const r = name === "reconcile-daily" && extras.purgarSessoes
       ? { ...(base as object), purged: { ...((base as { purged?: object }).purged ?? {}), sessions: await extras.purgarSessoes(deps.clock.now()) } }
       : base;
-    deps.log(`job ${name}`, { result: r });
+    // Sucesso FECHA a exceção que a falha anterior abriu. Sem isto, `integration_error` de um job
+    // que já voltou fica aberta para sempre — e o alerta de exceção travada (>30 min) manda e-mail
+    // dizendo que o job "está falhando" sobre um job que está rodando. Histórico não encerrado
+    // virava afirmação sobre o presente. Achado do review adversarial do Codex.
+    const fechadas = await deps.repo.exceptions.resolverPorRef(`jobs:${name}`, "motor").catch(() => 0);
+    deps.log(`job ${name}`, { result: r, ...(fechadas > 0 ? { excecoesFechadas: fechadas } : {}) });
     return r;
   } catch (e) {
     const error = (e as Error).message;

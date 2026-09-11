@@ -51,6 +51,43 @@ describe("worker que voltou depois do TTL (#6)", () => {
   });
 });
 
+// O ramo do ERRO, que é o que o teste acima não alcançava: com `payload: {}` o evento sai por
+// `ignored` e nunca entra no `catch`. Achado do review adversarial do Codex — o teste cobria a
+// metade que já funcionava e pulava a que estava quebrada.
+describe("worker que perdeu a reserva e FALHA (#6)", () => {
+  it("não abre exceção nem conta erro sobre trabalho que o novo dono concluiu", async () => {
+    w = await world();
+    const { processAsaasEvents } = await import("../../src/core/index.js");
+    const id = (await w.deps.repo.asaasEvents.insert({
+      asaasEventId: "e-erro", eventType: "PAYMENT_RECEIVED", asaasPaymentId: "pay_some",
+      payload: { id: "e-erro", event: "PAYMENT_RECEIVED", payment: { id: "pay_some", status: "RECEIVED", value: 10 } },
+    }))!;
+    const [velho] = await w.deps.repo.asaasEvents.pending(10, w.deps.clock.now());
+
+    // A corrida REAL: o worker velho ainda é o dono quando começa (o `touch` passa), perde a
+    // reserva DURANTE a chamada externa — que é justamente a parte lenta — e só descobre no
+    // `mark`. Roubar a reserva antes do `touch` faria o laço sair cedo e o teste provaria a
+    // guarda errada: foi o que aconteceu na primeira versão deste teste.
+    const mundo = w;   // o `w` do módulo é `World | undefined`; a closure precisa do estreitado
+    w.deps.asaas.getPayment = async () => {
+      await mundo.pool.query("update webhook_events set locked_at = $2 where id=$1", [id, new Date(mundo.deps.clock.now().getTime() - 20 * 60_000)]);
+      const [novo] = await mundo.deps.repo.asaasEvents.pending(10, mundo.deps.clock.now());
+      await mundo.deps.repo.asaasEvents.mark(id, "done", { claimToken: novo!.claimToken });
+      throw Object.assign(new Error("asaas 403 forbidden"), { transient: false });
+    };
+    const original = w.deps.repo.asaasEvents.pending;
+    w.deps.repo.asaasEvents.pending = async () => [velho!];
+    const out = await processAsaasEvents(w.deps);
+    w.deps.repo.asaasEvents.pending = original;
+    delete (w.asaas as unknown as Record<string, unknown>).getPayment;
+
+    expect(out.errors, "contou erro de um evento que já não era dele").toBe(0);
+    expect((await w.pool.query("select process_status from webhook_events where id=$1", [id])).rows[0].process_status).toBe("done");
+    const n = Number((await w.pool.query("select count(*)::int as n from exceptions where type='payment_unmatched'")).rows[0].n);
+    expect(n, "abriu exceção de pagamento não baixado sobre uma baixa que ACONTECEU").toBe(0);
+  });
+});
+
 // ── #6: token de posse na reserva ────────────────────────────────────────────
 describe("token de posse na reserva de evento (#6)", () => {
   it("a reserva devolve um token, e o mark com token velho NÃO sobrescreve (AC2)", async () => {

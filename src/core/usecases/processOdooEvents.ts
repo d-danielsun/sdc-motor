@@ -41,7 +41,15 @@ export async function processOdooEvents(deps: Deps, o: { limit?: number } = {}):
         }
       }
       else {
-        await repo.odooEvents.mark(ev.id, "error", { attempts, error: (e as Error).message, ...posse });
+        const meuAinda = await repo.odooEvents.mark(ev.id, "error", { attempts, error: (e as Error).message, ...posse });
+        if (!meuAinda) {
+          // A reserva foi perdida enquanto este worker falhava: o novo dono JÁ concluiu o evento.
+          // Sem esta guarda, o worker velho abria uma exceção sobre trabalho que deu certo e ainda
+          // contava `errors`. Somado ao alerta de exceção travada, isso virava e-mail dizendo que
+          // um pagamento não foi baixado quando ele foi. Achado do review adversarial do Codex.
+          deps.log("reserva perdida no erro: não abri exceção sobre trabalho de outro worker", { eventId: ev.id, odooId: ev.odooId });
+          continue;
+        }
         await repo.exceptions.openOnce({ type: "charge_create_failed", refTable: "odoo_events", refId: ev.id, detail: { odooId: ev.odooId, reason: isTransient(e) ? "retries esgotados" : "erro definitivo", error: (e as Error).message } });
         out.errors++;
       }

@@ -236,6 +236,13 @@ export function createPgRepo(pool: pg.Pool, lockPool: pg.Pool = pool): Repo {
         const r = await one("select id, type, status, ref_table, ref_id, detail from exceptions where id=$1", [id]);
         return r ? { id: Number(r.id), type: r.type as ExceptionType, status: r.status as "open" | "resolved" | "ignored", refTable: (r.ref_table as string) ?? null, refId: r.ref_id === null ? null : Number(r.ref_id), detail: r.detail } : null;
       },
+      async resolverPorRef(refTable, by) {
+        const { rowCount } = await db.query(
+          "update exceptions set status='resolved', resolved_by=$2, resolved_at=now() where status='open' and ref_table=$1",
+          [refTable, by],
+        );
+        return rowCount ?? 0;
+      },
       async oldestOpen(types, limite) {
         // `min(created_at)` numa consulta só: o total e a mais antiga no mesmo snapshot, senão o
         // texto do e-mail pode dizer "3 exceções, a mais antiga a 2h" com números de instantes
