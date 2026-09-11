@@ -74,7 +74,7 @@ Responsável pelos itens acima: **[quem tem acesso à conta Asaas da SDC]**.
       pessoa está de férias
 - [ ] Um alerta de teste enviado e recebido de verdade, com o link clicado
 
-Os quatro alertas, e o que cada um significa:
+Os cinco alertas, e o que cada um significa:
 
 | Alerta | Significa | Urgência |
 |---|---|---|
@@ -82,9 +82,17 @@ Os quatro alertas, e o que cada um significa:
 | Job falhando | Uma parte do ciclo parou (chave vencida, base expirada, banco fora) | Hoje |
 | Nenhum pagamento chegou hoje | Pode ser dia fraco, pode ser o caminho de volta quebrado | Hoje, com uma olhada no painel do Asaas |
 | Chave do Odoo vencendo | Quando vencer, a baixa para de acontecer em silêncio | Esta semana |
+| Pagamento recebido e não baixado | O dinheiro entrou no Asaas e o Odoo não recebeu a liquidação | Agora. É divergência entre extrato e contas a receber |
 
-Cada um avisa uma vez por janela: 6 horas para os três primeiros, 24 para o da chave. É de
-propósito: alerta repetido é alerta ignorado.
+Cada um avisa uma vez por janela: 6 horas para todos, 24 para o da chave. É de propósito: alerta
+repetido é alerta ignorado. O último espera 30 minutos antes de avisar — retry com backoff cura
+soluço de rede sozinho, e só o que sobrevive a meia hora é falha de verdade. Como o watchdog roda
+a cada 15 minutos, o e-mail chega entre 30 e 45 minutos depois da falha.
+
+O que esse último NÃO cobre, de propósito: exceção que espera decisão humana (`writeoff_needed`,
+`amount_divergent`, `reversal_pending`, `customer_missing_document`). Elas estão abertas porque
+alguém precisa decidir, não porque algo quebrou — avisar a cada 6 horas até a pessoa clicar seria
+ruído. Quem cobre essas é a combinação de quem olha a fila, acima.
 
 ## 6. Console
 

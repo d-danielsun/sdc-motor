@@ -8,6 +8,12 @@ export const AUDIT_RETENTION_DAYS = 90;
 export const EVENT_RETENTION_DAYS = 90;       // done/ignored; 'error' fica até alguém resolver
 export const API_KEY_WARN_DAYS = 75;          // key do Odoo vence em ≤90
 export const STALE_HEARTBEAT_HOURS = 8;
+export const TRAVADA_MINUTOS = 30;            // exceção de FALHA aberta há mais que isso vira alerta
+/** As exceções que significam "o motor tentou e não conseguiu". Ficar aberta é sintoma de coisa
+ *  quebrada, não de decisão pendente — por isso alertam sozinhas. As de decisão humana
+ *  (`amount_divergent`, `writeoff_needed`, `reversal_pending`, `customer_missing_document`) NÃO
+ *  entram: elas esperam uma pessoa de propósito, e avisar a cada 6h até alguém clicar é ruído. */
+export const TIPOS_TRAVA = ["payment_unmatched", "charge_create_failed", "integration_error"] as const;
 export const RECONCILE_LOOKBACK_DAYS = 3;
 export const RAW_PAYLOAD_MAX = 20_000;
 export const MAX_MONEY_INT_DIGITS = 12;       // numeric(14,2)

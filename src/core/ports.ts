@@ -124,6 +124,10 @@ export interface Repo {
     countOpenByType(): Promise<Record<string, number>>;
     get(id: number): Promise<{ id: number; type: ExceptionType; status: "open" | "resolved" | "ignored"; refTable: string | null; refId: number | null; detail: unknown } | null>;
     setStatus(id: number, status: "open" | "resolved" | "ignored", by: string | null): Promise<void>;
+    /** A exceção ABERTA mais antiga entre `types` criada ANTES de `limite`, com o total do grupo.
+     *  O corte vem do chamador (o clock do motor), nunca do `now()` do Postgres: o mundo de teste
+     *  usa relógio fixo, e misturar os dois é o erro que já quebrou quatro testes deste repo. */
+    oldestOpen(types: ExceptionType[], limite: Date): Promise<{ id: number; type: ExceptionType; criadaEm: Date; total: number } | null>;
     /** Exceções ABERTAS do tipo que apontam para um evento — o alvo do reenfileiramento em lote. */
     listOpenWithEvent(type: ExceptionType): Promise<Array<{ id: number; refTable: "webhook_events" | "odoo_events"; refId: number }>>;
   };

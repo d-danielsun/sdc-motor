@@ -15,7 +15,7 @@
 // 3. A linha registra a TENTATIVA. Se o processo morrer entre reservar e enviar, aquele aviso
 //    se perde e o próximo sai na janela seguinte. Preferimos perder um aviso a mandar dez.
 import type { Deps } from "../ports.js";
-import type { Alert } from "../types.js";
+import type { Alert, ExceptionType } from "../types.js";
 
 export const SILENCIO_PADRAO_MINUTOS = 6 * 60;
 export const SILENCIO_LONGO_MINUTOS = 24 * 60;
@@ -85,7 +85,7 @@ export async function alertar(deps: Deps, a: Alert, o: { consoleUrl?: string | n
 const corpoComLink = (corpo: string, link: string | null): string =>
   link ? `${corpo}\n\nAbra no console:\n${link}\n` : `${corpo}\n`;
 
-// ── os quatro alertas ────────────────────────────────────────────────────────
+// ── os cinco alertas ─────────────────────────────────────────────────────────
 //
 // O texto é o produto aqui: quem recebe às 3h da manhã precisa saber, em três linhas, o que
 // aconteceu, o que o motor já tentou sozinho e o que só uma pessoa resolve.
@@ -142,6 +142,44 @@ export const alertaSilencio = (d: { horas: number; ultimoEventoEm: string | null
     "",
     "Como saber a diferença: veja no painel do Asaas se há cobranças pagas hoje. Se houver e o",
     "motor não recebeu, o problema é o webhook, não o movimento.",
+  ].join("\n"),
+  silencioMinutos: SILENCIO_PADRAO_MINUTOS,
+  excecaoId: d.excecaoId ?? null,
+});
+
+/** O motor tentou, não conseguiu, e ninguém ficou sabendo.
+ *
+ *  POR QUE ESTE ALERTA EXISTE SEPARADO DOS OUTROS. O `alertaJobFalhou` mora no `catch` do job —
+ *  mas os workers capturam erro POR ITEM e devolvem contadores, então o job nunca estoura. Uma
+ *  permissão faltando só na baixa deixava evento em `error`, exceção aberta no console e ZERO
+ *  e-mails: o dinheiro entra no Asaas, o Odoo não recebe a liquidação, e você descobre pelo
+ *  cliente. Este alerta olha o ESTADO (exceção de falha velha), não a exceção estourada.
+ *
+ *  A janela de 30 min existe para o transitório se curar sozinho antes de virar e-mail: retry com
+ *  backoff resolve soluço de rede, e só o que sobrevive a meia hora é falha de verdade. */
+export const alertaTravada = (d: { tipo: ExceptionType; total: number; minutos: number; excecaoId?: number | null }): Alert => ({
+  tipo: d.tipo,
+  chave: `travada:${d.tipo}`,
+  assunto: d.tipo === "payment_unmatched"
+    ? "Motor SDC: pagamento recebido e NÃO baixado no Odoo"
+    : `Motor SDC: ${d.total} exceção(ões) de ${d.tipo} travada(s)`,
+  corpo: [
+    ...(d.tipo === "payment_unmatched"
+      ? ["O Asaas confirmou pagamento e o motor não conseguiu dar baixa no Odoo. O dinheiro entrou;",
+         "a fatura do cliente continua aberta no ERP. Cada hora aqui é uma hora de divergência entre",
+         "o extrato e o contas a receber."]
+      : d.tipo === "charge_create_failed"
+      ? ["O motor não conseguiu criar a cobrança no Asaas para uma fatura postada no Odoo. Nenhum",
+         "boleto foi enviado ao cliente, e não vai ser reenviado sozinho depois de esgotar os retries."]
+      : ["Um job falhou de forma definitiva e a exceção continua aberta. A parte do ciclo que ele",
+         "cobre não está acontecendo."]),
+    "",
+    `${d.total} exceção(ões) aberta(s) deste tipo, a mais antiga há ${d.minutos} minutos. O motor já`,
+    "esgotou os retries automáticos — o que sobrou precisa de uma pessoa.",
+    "",
+    "O que conferir primeiro: o detalhe da exceção traz o erro cru do Odoo ou do Asaas. Chave de API",
+    "sem permissão de lançar pagamento e base do Odoo expirada são as duas causas que mais aparecem,",
+    "e as duas produzem exatamente este sintoma. Corrigida a causa, o botão \"reprocessar\" reenfileira.",
   ].join("\n"),
   silencioMinutos: SILENCIO_PADRAO_MINUTOS,
   excecaoId: d.excecaoId ?? null,

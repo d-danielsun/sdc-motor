@@ -1,15 +1,17 @@
 // Fila do Asaas interrompida, penalidades subindo, silêncio suspeito, key do Odoo perto de vencer.
 //
-// É AQUI que três dos quatro alertas críticos nascem, no mesmo tick que detecta a condição — o
+// É AQUI que quatro dos cinco alertas críticos nascem, no mesmo tick que detecta a condição — o
 // watchdog roda a cada 15 min, então a detecção acontece em ≤15 min. Enviar não pode derrubar
 // o watchdog: `alertar` captura a falha e devolve o resultado.
-import { API_KEY_WARN_DAYS, STALE_HEARTBEAT_HOURS } from "../limits.js";
+import { API_KEY_WARN_DAYS, STALE_HEARTBEAT_HOURS, TIPOS_TRAVA, TRAVADA_MINUTOS } from "../limits.js";
 import type { Deps } from "../ports.js";
-import { alertaChaveVencendo, alertaFilaInterrompida, alertaSilencio, alertar, type ResultadoAlerta } from "./notify.js";
+import { alertaChaveVencendo, alertaFilaInterrompida, alertaSilencio, alertaTravada, alertar, type ResultadoAlerta } from "./notify.js";
 
 export interface WatchdogSummary {
   at: string; ok: boolean; interrupted: boolean; reactivated: boolean; penalizedDelta: number;
   staleHeartbeat: boolean; apiKeyDays: number | null;
+  /** Exceções de FALHA abertas além do limite, por tipo. Vazio é o estado saudável. */
+  travadas: Record<string, number>;
   /** O que aconteceu com cada alerta neste tick — vai pro log do job e pro console. */
   alertas: Record<string, ResultadoAlerta>;
 }
@@ -26,7 +28,7 @@ export function isBusinessHoursBrt(now: Date): boolean {
 export async function watchdog(deps: Deps): Promise<WatchdogSummary> {
   const { repo, asaas, clock } = deps;
   const now = clock.now();
-  const s: WatchdogSummary = { at: now.toISOString(), ok: false, interrupted: false, reactivated: false, penalizedDelta: 0, staleHeartbeat: false, apiKeyDays: null, alertas: {} };
+  const s: WatchdogSummary = { at: now.toISOString(), ok: false, interrupted: false, reactivated: false, penalizedDelta: 0, staleHeartbeat: false, apiKeyDays: null, travadas: {}, alertas: {} };
   const consoleUrl = await repo.config.get<string | null>("CONSOLE_PUBLIC_URL").catch(() => null);
 
   const webhookId = await repo.config.get<string | null>("ASAAS_WEBHOOK_ID");
@@ -64,6 +66,18 @@ export async function watchdog(deps: Deps): Promise<WatchdogSummary> {
         horas: STALE_HEARTBEAT_HOURS, ultimoEventoEm: last?.toISOString() ?? null, cobrancasAbertas: abertas, excecaoId: exc.id,
       }), { consoleUrl });
     }
+  }
+
+  // Falha que o motor não resolveu sozinho. Um alerta por TIPO, não por exceção: cinquenta eventos
+  // quebrados pela mesma chave sem permissão são um problema, não cinquenta e-mails. Fora do
+  // horário comercial também — baixa parada de madrugada continua sendo baixa parada de manhã.
+  const limite = new Date(now.getTime() - TRAVADA_MINUTOS * 60_000);
+  for (const tipo of TIPOS_TRAVA) {
+    const t = await repo.exceptions.oldestOpen([tipo], limite);
+    if (!t) continue;
+    s.travadas[tipo] = t.total;
+    const minutos = Math.floor((now.getTime() - t.criadaEm.getTime()) / 60_000);
+    s.alertas[`travada:${tipo}`] = await alertar(deps, alertaTravada({ tipo: t.type, total: t.total, minutos, excecaoId: t.id }), { consoleUrl });
   }
 
   const keyCreated = await repo.config.get<string | null>("ODOO_API_KEY_CREATED_AT");
