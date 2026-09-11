@@ -108,8 +108,9 @@ export const tokenBemFormado = (v: string | null | undefined): v is string => ty
 export const LOGIN_MAX_TENTATIVAS = 5;          // a 6ª responde 429
 export const LOGIN_JANELA_MS = 15 * 60 * 1000;
 
-/** Contador em memória do processo (é um serviço só, e o issue #14 é quem leva isso pro banco).
- *  Conta por e-mail E por IP: quem varre e-mails de um IP só bate no limite do IP. */
+/** Contador em memória do processo, de propósito enquanto o motor for um processo só. Com duas
+ *  réplicas o braço por IP deixa de valer (cada réplica conta o seu), e aí isto precisa ir para o
+ *  banco. Conta por e-mail E por IP: quem varre e-mails de um IP só bate no limite do IP. */
 export class FreioDeLogin {
   private tentativas = new Map<string, number[]>();
   constructor(private readonly max = LOGIN_MAX_TENTATIVAS, private readonly janelaMs = LOGIN_JANELA_MS) {}

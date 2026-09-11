@@ -1,5 +1,6 @@
--- Endurecimento técnico: fecha #4, #5, #6, #7 e #8. Três mudanças de schema, cada uma fechando
--- um jeito de o motor errar em silêncio.
+-- Endurecimento técnico (#15). Três mudanças de SCHEMA; as outras partes da #15 (#4 o tripwire
+-- de leitura, #5 o reenfileiramento em lote, #8 os DTOs e a paginação) são só código e não
+-- aparecem aqui. Cada seção abaixo diz qual issue ela fecha.
 
 -- ── 1. Token de posse na reserva de evento (#6) ──────────────────────────────
 -- Hoje a reserva é `process_status='processing'` + `locked_at` com TTL de 10 min, e o `mark` é
@@ -30,6 +31,8 @@ update odoo_events e
 create unique index odoo_events_pendente_uniq on odoo_events (odoo_model, odoo_id) where process_status = 'pending';
 
 -- ── 3. Migrations com hash do conteúdo (#7) ──────────────────────────────────
+-- Redundante com o bootstrap do runner (que já faz o mesmo `add column if not exists`), e fica
+-- aqui só para quem aplicar os arquivos à mão com psql ver a coluna existir.
 -- `schema_migrations` guardava só o nome: um arquivo editado depois de aplicado passava batido, e
 -- ninguém descobria que o banco e o disco discordam. A coluna nasce nula e o RUNNER preenche o
 -- hash das já aplicadas na primeira execução — SQL não lê arquivo, e recusar subir em todo

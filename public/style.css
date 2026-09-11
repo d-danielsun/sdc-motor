@@ -18,6 +18,14 @@
   --sombra: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .1);
 }
 * { box-sizing: border-box; }
+
+/* O atributo `hidden` só esconde porque a folha do NAVEGADOR diz `[hidden]{display:none}` — e
+   qualquer regra nossa de `display` ganha dela na cascata. `.login` e `.painel` setam
+   `display:grid`, então o login, o painel de detalhe VAZIO e o diálogo de confirmação com um
+   botão vermelho em branco apareciam todos juntos, desde o primeiro pixel, e nenhum
+   `el.hidden = true` do app.js tinha efeito. Nenhum teste estático pega isso; só abrir a tela.
+   Achado pela review de design da #15. */
+[hidden] { display: none !important; }
 body {
   margin: 0;
   font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;

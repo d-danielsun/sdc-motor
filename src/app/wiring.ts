@@ -32,7 +32,7 @@ export function readEnv(e: NodeJS.ProcessEnv = process.env): Env {
   if (!e.CONSOLE_PUBLIC_URL) warnings.push("CONSOLE_PUBLIC_URL ausente — o e-mail de alerta sai sem link para o console");
   if (!e.ODOO_API_KEY_CREATED_AT) warnings.push("ODOO_API_KEY_CREATED_AT ausente — o aviso de chave do Odoo vencendo NÃO vai disparar");
   else if (Number.isNaN(new Date(e.ODOO_API_KEY_CREATED_AT).getTime())) warnings.push(`ODOO_API_KEY_CREATED_AT não é data válida (${e.ODOO_API_KEY_CREATED_AT}) — o aviso de chave vencendo não vai disparar`);
-  if (e.CONSOLE_TOKEN && e.CONSOLE_TOKEN.length < MIN_SECRET_LENGTH) warnings.push(`CONSOLE_TOKEN tem menos de ${MIN_SECRET_LENGTH} caracteres — console DESABILITADO`);
+  if (e.CONSOLE_TOKEN && e.CONSOLE_TOKEN.length < MIN_SECRET_LENGTH) warnings.push(`CONSOLE_TOKEN tem menos de ${MIN_SECRET_LENGTH} caracteres — o cron externo (POST /api/v1/jobs/:name) fica sem acesso; o console segue funcionando pelo login`);
   if (!e.ODOO_URL || !e.ODOO_API_KEY) warnings.push("ODOO_URL/ODOO_API_KEY ausentes — toda chamada ao Odoo vai falhar (ok só até o acesso chegar)");
   // DATABASE_URL ou PG* (senha com @ / # % não quebra a URL). Advisory locks exigem conexão de SESSÃO: pooler em modo transação (Supabase :6543) não serve.
   const databaseUrl = e.DATABASE_URL ?? (e.PGHOST ? `postgres://${encodeURIComponent(e.PGUSER ?? "motor")}:${encodeURIComponent(e.PGPASSWORD ?? "")}@${e.PGHOST}:${e.PGPORT ?? "5432"}/${e.PGDATABASE ?? "motor"}` : DEFAULT_DATABASE_URL);

@@ -13,7 +13,7 @@ import { getCookie, setCookie } from "hono/cookie";
 import type { AuthStore, ConsoleUser } from "../adapters/db/auth.js";
 import { FreioDeLogin, isEmail, normalizeEmail, SESSION_TTL_SECONDS, tokenBemFormado, verifyPassword } from "../core/auth.js";
 import type { ConsoleQueries } from "../core/console.js";
-import { CONSOLE_CONFIG_KEYS, EXC_TYPES, type ActionResult, type ErrorCode } from "../core/console.js";
+import { CHARGE_STATUSES, CONSOLE_CONFIG_KEYS, EXC_TYPES, type ActionResult, type ErrorCode } from "../core/console.js";
 import type { Deps } from "../core/ports.js";
 import type { ChargeStatus, ExceptionType } from "../core/types.js";
 import { acceptWriteoff, enableCustomerNotifications, healthReport, isIsoDate, reprocessException, requeueAllByType, resolveException, setConsoleConfig } from "../core/usecases/console.js";
@@ -72,7 +72,6 @@ export function exigeSecure(c: Context, cd: Pick<ConsoleDeps, "permitirCookieIns
 const STATUS_BY_CODE: Record<ErrorCode | "internal" | "unauthorized", number> = { not_found: 404, invalid_state: 409, invalid_input: 400, upstream: 502, config: 500, busy: 409, internal: 500, unauthorized: 401 };
 const EXC_STATUSES = ["open", "resolved", "ignored"] as const;
 
-const CHARGE_STATUSES: ChargeStatus[] = ["pending", "created", "confirmed", "received", "settled", "cancelled", "refunded", "exception"];
 
 class BadInput extends Error { constructor(msg: string) { super(msg); } }
 const intParam = (v: string | undefined, name: string, o: { min?: number; max?: number } = {}): number | undefined => {
@@ -121,15 +120,43 @@ export function clientIp(c: Context, proxiesConfiaveis = 0): string {
  *  gastar scrypt — a resposta rápida é a defesa, não o enfileiramento. */
 export const MAX_LOGINS_SIMULTANEOS = 4;
 
-/** CSRF: um formulário cross-site só consegue mandar form-urlencoded ou multipart. Toda rota
- *  que muda estado exige JSON, o que um formulário não consegue forjar sem CORS. */
+/** CSRF, primeira camada: toda rota que muda estado exige `content-type: application/json`,
+ *  INCLUSIVE quando não há corpo.
+ *
+ *  A versão anterior só checava o content-type quando ele existia, e a maioria das ações do
+ *  console não manda corpo nenhum (`accept-writeoff`, `resolve`, `reprocess`). Um POST vazio
+ *  não tem content-type, então passava direto — o guard tinha um buraco do tamanho das ações
+ *  que mais importam. Achado pelo Codex e reproduzido: `resolve` respondeu 200 a um POST sem
+ *  content-type vindo de outra origem. */
 function exigeJson(c: Context): void {
   const ct = (c.req.header("content-type") ?? "").split(";")[0]?.trim().toLowerCase();
-  if (ct !== "application/json") throw new BadInput("content-type deve ser application/json");
+  if (ct !== "application/json") throw new BadInput("content-type deve ser application/json (inclusive em POST sem corpo)");
 }
-function exigeJsonSeTiverCorpo(c: Context): void {
-  const ct = (c.req.header("content-type") ?? "").split(";")[0]?.trim().toLowerCase();
-  if (ct && ct !== "application/json") throw new BadInput("content-type deve ser application/json");
+
+/** CSRF, segunda camada: o navegador diz de onde veio.
+ *
+ *  `Sec-Fetch-Site` é header proibido (nenhum script consegue forjá-lo) e todo navegador atual
+ *  o envia. `same-origin` é a própria SPA; `none` é a barra de endereços. Qualquer outra coisa
+ *  é outro site pedindo — inclusive um subdomínio irmão, que é o caso em que o `SameSite=Lax`
+ *  do cookie NÃO protege, porque irmão é same-site.
+ *
+ *  Ausente = não veio de navegador (curl, cron). Esses não carregam cookie de sessão, então
+ *  não são o vetor; exigir o header aqui quebraria o cron sem ganhar nada. */
+function exigeMesmaOrigem(c: Context): void {
+  const site = (c.req.header("sec-fetch-site") ?? "").trim().toLowerCase();
+  if (site && site !== "same-origin" && site !== "none") {
+    throw new BadInput(`requisição de outra origem recusada (sec-fetch-site: ${site})`);
+  }
+  // Navegador antigo, sem Sec-Fetch-Site: compara Origin com o host da requisição.
+  if (!site) {
+    const origin = c.req.header("origin");
+    if (origin) {
+      const host = c.req.header("x-forwarded-host") ?? c.req.header("host") ?? "";
+      let origemHost = "";
+      try { origemHost = new URL(origin).host; } catch { origemHost = "?"; }
+      if (host && origemHost !== host) throw new BadInput("requisição de outra origem recusada (origin não bate com host)");
+    }
+  }
 }
 
 async function jsonObject(c: Context): Promise<Record<string, unknown>> {
@@ -154,6 +181,7 @@ export function createConsoleApi(cd: ConsoleDeps): Hono {
 
   api.post("/session", async (c) => {
     if (!cd.auth) return c.json({ ok: false, code: "config", error: "login do console indisponível: banco sem a migration 0005" }, 503);
+    exigeMesmaOrigem(c);
     exigeJson(c);
     const body = await jsonObject(c);
     const email = typeof body.email === "string" ? normalizeEmail(body.email) : "";
@@ -197,6 +225,7 @@ export function createConsoleApi(cd: ConsoleDeps): Hono {
   });
 
   api.delete("/session", async (c) => {
+    exigeMesmaOrigem(c);
     const token = getCookie(c, SESSION_COOKIE);
     if (cd.auth && tokenBemFormado(token)) {
       const sessao = await cd.auth.resolverSessao(token, cd.deps.clock.now());
@@ -223,6 +252,9 @@ export function createConsoleApi(cd: ConsoleDeps): Hono {
   // é de job é o próprio roteador: se este handler rodou, é job.
   const jobsApp = new Hono();
   jobsApp.post("/:name", async (c) => {
+    // Vale para o caminho do NAVEGADOR (a tela dispara job). O cron externo não manda o header
+    // e segue passando, que é o desenho.
+    exigeMesmaOrigem(c);
     const sessao = await sessaoDe(c);
     if (!sessao) {
       const auth = c.req.header("authorization") ?? "";
@@ -240,7 +272,8 @@ export function createConsoleApi(cd: ConsoleDeps): Hono {
     const sessao = await sessaoDe(c);
     if (!sessao) return naoAutorizado(c);
     c.set("consoleUser", sessao.user);
-    if (c.req.method !== "GET") exigeJsonSeTiverCorpo(c);
+    // As duas camadas de CSRF, em toda rota que muda estado — com corpo ou sem.
+    if (c.req.method !== "GET") { exigeMesmaOrigem(c); exigeJson(c); }
     await next();
   });
 

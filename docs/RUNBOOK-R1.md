@@ -152,7 +152,8 @@ TRUSTED_PROXIES=1                            # atrás de Cloud Run / ALB / Cloud
 
 O motor **falha fechado** no que é essencial: sem `ASAAS_API_KEY` ou sem os dois tokens de
 webhook ele não sobe. O que é opcional vira aviso no log, não erro: sem `RESEND_API_KEY` os
-alertas ficam em no-op, e sem `CONSOLE_TOKEN` o console responde 503.
+alertas ficam em no-op, e sem `CONSOLE_TOKEN` o cron externo não consegue chamar
+`POST /api/v1/jobs/:name` (401) — o console e o login continuam funcionando normalmente.
 
 O prefixo da chave do Asaas tem que combinar com a URL. Chave de produção com URL de sandbox, ou
 o contrário, é recusado no boot — foi o erro que mais quase aconteceu durante o desenvolvimento.

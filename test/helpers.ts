@@ -5,7 +5,7 @@ import { FakeOdoo } from "../src/adapters/fakes/fakeOdoo.js";
 import { FakeNotifier } from "../src/adapters/notify/fake.js";
 import { fixedClock } from "../src/adapters/clock.js";
 import { createServer } from "../src/app/server.js";
-import { createConsoleApi } from "../src/app/console.js";
+import { SESSION_COOKIE, createConsoleApi } from "../src/app/console.js";
 import { createJobRunner } from "../src/app/scheduler.js";
 import { createAuthStore } from "../src/adapters/db/auth.js";
 import { createConsoleQueries } from "../src/adapters/db/console.js";
@@ -67,7 +67,7 @@ export async function world(o: { today?: string; idaEnabled?: boolean; cutoff?: 
   const api: World["api"] = async (path, init = {}, o = {}) => {
     const cookie = o.cookie === undefined ? sessao : o.cookie;
     const headers: Record<string, string> = { "content-type": "application/json", ...(init.headers as Record<string, string> ?? {}) };
-    if (cookie) headers.cookie = `sdc_session=${cookie}`;
+    if (cookie) headers.cookie = `${SESSION_COOKIE}=${cookie}`;
     if (o.bearer) headers.authorization = `Bearer ${o.bearer}`;
     const res = await app().request(`/api/v1${path}`, { ...init, headers });
     return { status: res.status, body: await res.json().catch(() => null), headers: res.headers };

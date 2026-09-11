@@ -58,7 +58,7 @@ const TIPOS = {
   queue_interrupted: ["Fila do Asaas parada", "vermelha"],
   stale_heartbeat: ["Silêncio prolongado", "laranja"],
   api_key_expiring: ["Chave do Odoo vencendo", "laranja"],
-  writeoff_needed: ["Diferença a aceitar", "azul"],
+  writeoff_needed: ["Diferença a aceitar", "laranja"],   // decisão humana pendente, como amount_divergent — azul é "nada a fazer"
   webhook_penalized: ["Webhook penalizado", "laranja"],
   integration_error: ["Erro de integração", "vermelha"],
 };
@@ -75,11 +75,14 @@ class ErroApi extends Error {
 }
 
 async function api(caminho, opcoes = {}) {
+  // O content-type vai em TODO método que não é GET, inclusive POST sem corpo: o servidor
+  // exige, e é essa exigência que barra o pedido de outro site (que não consegue setar o
+  // header sem CORS). Antes ele só ia quando havia corpo, e as ações do console não têm corpo.
+  const mudaEstado = (opcoes.method ?? "GET") !== "GET";
   const res = await fetch(API + caminho, {
     credentials: "same-origin",
-    // Toda rota que muda estado exige JSON: é o que barra formulário cross-site.
-    headers: opcoes.body || opcoes.method === "DELETE" ? { "content-type": "application/json" } : {},
     ...opcoes,
+    headers: { ...(mudaEstado ? { "content-type": "application/json" } : {}), ...(opcoes.headers ?? {}) },
   });
   if (res.status === 401) { exigirLogin(); throw new ErroApi(401, "unauthorized", "sessão expirada"); }
   const corpo = await res.json().catch(() => null);
@@ -400,11 +403,25 @@ async function carregarSaude() {
   const totalExc = Object.values(h.openExceptionsByType).reduce((a, b) => a + b, 0);
   cartoes.appendChild(cartao("Exceções abertas", totalExc, Object.entries(h.openExceptionsByType).map(([t, n]) => `${(TIPOS[t] ?? [t])[0]}: ${n}`).join(" · ") || "nenhuma", totalExc > 0 ? "atencao" : ""));
   cartoes.appendChild(cartao("Notificações ao cliente", h.notificationsEnabled ? "ligadas" : "desligadas", null));
+  // O 202 do enable-notifications devolve só o total: é AQUI que o resultado aparece, inclusive
+  // quantos falharam. Sem este cartão, cliente que ficou sem notificação era invisível.
+  if (h.notificationsProgress) {
+    const p = h.notificationsProgress;
+    cartoes.appendChild(cartao("Ligando notificações", `${p.updated}/${p.total}`,
+      p.failed > 0 ? `${p.failed} falharam — rode de novo` : p.ok ? "concluído" : "em andamento",
+      p.failed > 0 ? "ruim" : p.ok ? "" : "atencao"));
+  }
   cartoes.appendChild(cartao("Último evento do Asaas", quando(h.lastAsaasEventAt), "chegada de pagamento"));
   cartoes.appendChild(cartao("Último evento do Odoo", quando(h.lastOdooEventAt), "fatura postada"));
-  cartoes.appendChild(cartao("Fila do Asaas", h.webhook.interrupted === true ? "PARADA" : h.webhook.id ? "ok" : "sem webhook",
-    h.webhook.penalizedRequestsCount !== null ? `penalizações: ${h.webhook.penalizedRequestsCount}` : "registre com o job register-asaas-webhook",
-    h.webhook.interrupted === true ? "ruim" : h.webhook.id ? "" : "atencao"));
+  // TRÊS estados, não dois. `interrupted` vem null quando a consulta ao Asaas falhou, e antes
+  // isso caía no mesmo "ok" verde de uma fila comprovadamente saudável — informação ausente
+  // virando afirmação positiva, na tela que a pessoa usa para decidir voltar a dormir.
+  const [filaTexto, filaNota, filaClasse] =
+    h.webhook.interrupted === true ? ["PARADA", `penalizações: ${h.webhook.penalizedRequestsCount ?? "?"}`, "ruim"]
+    : h.webhook.interrupted === false ? ["ok", `penalizações: ${h.webhook.penalizedRequestsCount ?? 0}`, ""]
+    : h.webhook.id ? ["estado desconhecido", "não consegui consultar o Asaas agora", "atencao"]
+    : ["sem webhook", "registre com o job register-asaas-webhook", "atencao"];
+  cartoes.appendChild(cartao("Fila do Asaas", filaTexto, filaNota, filaClasse));
   cartoes.appendChild(cartao("Chave do Odoo", h.odooApiKeyAgeDays === null ? "—" : `${h.odooApiKeyAgeDays} dias`, h.odooApiKeyAgeDays === null ? "idade não registrada" : "vence em 90", h.odooApiKeyAgeDays !== null && h.odooApiKeyAgeDays > 75 ? "atencao" : ""));
   for (const [rotulo, j] of [["Última varredura", h.lastSync], ["Último reconcile", h.lastReconcile], ["Último watchdog", h.lastWatchdog]]) {
     cartoes.appendChild(cartao(rotulo, j ? quando(j.at) : "nunca", j ? (j.ok ? "sem erro" : "terminou com erro") : null, j && !j.ok ? "ruim" : ""));
