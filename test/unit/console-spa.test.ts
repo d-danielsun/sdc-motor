@@ -96,17 +96,50 @@ describe("SPA do console", () => {
   it("as ações destrutivas passam por confirmação, com texto do que vai acontecer", () => {
     // accept-writeoff mexe no ERP; IDA_ENABLED faz boleto sair; enable-notifications dispara
     // cobrança para todo mundo. As três abrem um diálogo com título, texto e rótulo do botão.
+    // A janela olha para TRÁS também. Olhando só para frente, o que este teste achava era a
+    // DEFINIÇÃO de `confirmar()`, lá embaixo no arquivo — não a chamada. Ele passou por acaso
+    // até um comentário empurrar a definição para fora dos 900 caracteres, e aí "reprovou" uma
+    // confirmação que sempre existiu. Proximidade em texto-fonte mede distância, não intenção:
+    // por isso agora exige a CHAMADA (`await confirmar(`) perto do uso.
+    const corpoDaFuncao = app.slice(app.indexOf("function confirmar("));
     for (const trecho of ["accept-writeoff", "IDA_ENABLED", "enable-notifications"]) {
-      // O termo aparece mais de uma vez (o dicionário de ajuda, por exemplo): basta que UMA
-      // das ocorrências esteja perto de uma confirmação.
-      const posicoes = [...app.matchAll(new RegExp(trecho.replace(/[-/]/g, "\\$&"), "g"))].map((m) => m.index ?? 0);
+      const posicoes = [...app.matchAll(new RegExp(trecho.replace(/[-/]/g, "\\$&"), "g"))].map((m) => m.index ?? 0)
+        .filter((i) => i < app.indexOf("function confirmar("));   // ocorrências no código, não na própria função
       expect(posicoes.length, `${trecho} não aparece no app.js`).toBeGreaterThan(0);
-      const temDialogo = posicoes.some((i) => /confirmar\(|titulo:/.test(app.slice(i, i + 900)));
-      expect(temDialogo, `${trecho} sem diálogo de confirmação`).toBe(true);
+      const temDialogo = posicoes.some((i) => /await confirmar\(/.test(app.slice(Math.max(0, i - 900), i + 900)));
+      expect(temDialogo, `${trecho} sem chamada a confirmar() por perto`).toBe(true);
     }
     // e o diálogo só resolve `true` no botão de confirmar, nunca por padrão
-    expect(app).toMatch(/ok\.onclick = \(\) => fim\(true\)/);
-    expect(app).toMatch(/confirma-cancelar"\)\.onclick = \(\) => fim\(false\)/);
+    expect(corpoDaFuncao).toMatch(/ok\.onclick = \(\) => fim\(true\)/);
+    expect(corpoDaFuncao).toMatch(/cancelar\.onclick = \(\) => fim\(false\)/);
+    // Escape dentro do diálogo CANCELA — não pode cair no listener global, que fecha o painel
+    // debaixo e deixa a confirmação órfã (achado do /qa-gate, reproduzido no navegador).
+    expect(corpoDaFuncao).toMatch(/Escape[\s\S]{0,120}fim\(false\)/);
+    expect(app).toMatch(/keydown[\s\S]{0,120}Escape[\s\S]{0,80}confirma"\)\.hidden/);
+  });
+
+  // Os três achados do /qa-gate de 11/09/2026, reproduzidos no navegador com Playwright. Estes
+  // testes são de TEXTO-FONTE — a suíte não renderiza — então valem como trava contra remoção
+  // acidental, não como prova de que funciona. A prova está nas evidências do TEST-PLAN §4.
+  it("a linha de lista é operável por teclado (qa-gate U3)", () => {
+    // `div` com onclick não recebe Tab e não responde a Enter: quem opera a fila o dia inteiro
+    // ficava obrigado a usar o mouse para CADA exceção.
+    expect(app, "o helper de linha clicável sumiu").toMatch(/const itemClicavel = /);
+    const helper = app.slice(app.indexOf("const itemClicavel = "), app.indexOf("const itemClicavel = ") + 600);
+    expect(helper).toMatch(/role: "button"/);
+    expect(helper).toMatch(/tabindex: "0"/);
+    expect(helper, "Enter/Espaço não acionam a linha").toMatch(/onkeydown[\s\S]{0,120}Enter/);
+    // e as duas listas usam o helper, em vez de cada uma reinventar a linha
+    expect([...app.matchAll(/itemClicavel\(/g)].length, "alguma lista voltou a montar a linha na mão").toBeGreaterThanOrEqual(2);   // exceções e cobranças
+    expect(app).not.toMatch(/el\("div", \{ class: "item", onclick/);
+  });
+
+  it("abrir um item escreve o id na URL (qa-gate U4)", () => {
+    // O `fecharPainel` sempre limpou este id do hash — só que ninguém o escrevia, então a metade
+    // de SAÍDA do deep-link nunca existiu: não dava para copiar o link do que se estava vendo.
+    const abrir = app.slice(app.indexOf("async function abrirExcecao("), app.indexOf("async function abrirExcecao(") + 700);
+    expect(abrir).toMatch(/history\.replaceState\(null, "", `#\/excecoes\/\$\{e\.id\}`\)/);
+    expect(abrir, "usar location.hash aqui acorda o roteador e reabre o painel").not.toMatch(/location\.hash = /);
   });
 
   it("o fetch manda o cookie e o content-type que a API exige", () => {

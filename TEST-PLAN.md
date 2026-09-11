@@ -1,78 +1,149 @@
-# TEST-PLAN — Fundação do motor de cobrança Odoo ↔ Asaas (S1–S5 API)  (spec 02-SPEC.md v1.1)
+# TEST-PLAN — Console do financeiro (#13) + endurecimento (#15) e alertas (#14)
 
 > Um por feature, versionado na branch, junto do código — vive dentro do PR.
 > §1/§2/§4/§5 são o de sempre (o que mudou, roteiro, evidência, follow-ups).
 > A §3 (caça-unknowns) é o passo obrigatório: o que só aparece USANDO.
+>
+> **Reescrito em 11/09/2026.** A versão anterior descrevia o sistema pré-#13 — falava de
+> `CONSOLE_TOKEN` como credencial do console e de `x-user` como identidade, dois contratos que
+> morreram quando o login por sessão entrou. Um plano de teste que descreve um sistema que não
+> existe mais é pior que nenhum: ele dá a sensação de cobertura sem cobrir nada.
 
 ## 1. O que foi implementado  (o MAPA)
-Fatura de cliente postada no Odoo vira 1 boleto Asaas por parcela; `PAYMENT_RECEIVED` vira baixa na parcela exata; o que foge do trilho (cliente sem CPF/CNPJ, valor divergente, juros, estorno, fila do Asaas parada) vira exceção numa API de console que o financeiro opera. Tudo roda em Postgres puro + Node, hoje local/container, amanhã Supabase ou GCP/AWS. · Spec: `~/w/salvei/propostas/SDC/02-SPEC.md` v1.1
-Superfícies: `POST /webhook-asaas` · `POST /webhook-odoo?k=` · `GET /health` · `/api/v1/{exceptions,charges,dashboard,health-report,config,customers/enable-notifications}` · jobs `worker`, `sync-invoices`, `reconcile-daily`, `watchdog` · `db/migrations/0001–0004` · `Dockerfile`/`docker-compose.yml`
-Personas afetadas: **Fernanda (financeiro SDC)** opera exceções e gates pelo console; **Asaas** e **Odoo** são atores externos que batem nos webhooks; **Dan (operador)** roda jobs e migrations.
-Deploy: aplicar `db/migrations/*.sql` ANTES do código (`npm run db:migrate`; o compose faz isso no serviço `migrate` e o motor recusa subir sem migração); env obrigatório `ASAAS_API_KEY`, `ASAAS_WEBHOOK_TOKEN` (≥32), `ODOO_WEBHOOK_KEY` (≥32) — falha fechada; `CONSOLE_TOKEN` (≥32) senão a API responde 503; `IDA_ENABLED` nasce `false` (gate R1 liga pelo console). Postgres do compose só em 127.0.0.1 e senha por `POSTGRES_PASSWORD`.
+
+Fatura postada no Odoo vira 1 boleto Asaas por parcela; `PAYMENT_RECEIVED` vira baixa na parcela
+exata; o que foge do trilho vira exceção. **O console em `/console/` é a superfície humana disso**:
+login próprio com sessão, fila de exceções com as quatro ações, saúde do motor, configuração e
+cobranças. Alerta crítico por e-mail avisa quando algo trava sem ninguém olhando.
+· Spec: `~/w/salvei/propostas/SDC/02-SPEC.md` v1.1
+
+**Superfícies:** SPA sem build em `public/` (`app.js`, `style.css`) · `src/app/console.ts`
+(sessão, `/session`, `/me`, ações, `/jobs/:name` para o cron) · read model em
+`src/core/console.ts` + `src/adapters/db/console.ts` · `db/migrations/0005`–`0008` · CLI
+`console-user` · modo demo (`src/cli/demo.ts`).
+
+**Personas:** **Fernanda (financeiro SDC)** opera a fila pelo navegador, com teclado e mouse, e é
+quem recebe o alerta às 3h. **Dan (operador)** cria acesso, roda jobs e migrations. **Asaas** e
+**Odoo** batem nos webhooks.
+
+**Deploy:** `npm run db:migrate` ANTES do código; o motor recusa subir com migration pendente.
+Identidade do console é **sessão em cookie** — `CONSOLE_TOKEN` sobrevive só em `POST /jobs/:name`,
+o cron externo (a afirmação "sem CONSOLE_TOKEN a API responde 503" está morta desde a #13; ver
+§5-F4). Atualização de motor **já no ar**: desligue as regras do Odoo antes de migrar
+(`db/migrations/down/LEIA-ME.md`, regra 3).
 
 ## 2. Roteiro de verificação  (território CONHECIDO — o agente executa)
-> Serviço sem UI: [AUTO] = agente com curl no motor rodando em `localhost:8787` + vitest. Sem passo [MANUAL].
-### 2.1 fluxo feliz
-- [x] [AUTO] `GET /health` → 200 `{ok:true, idaEnabled:false}` (kill switch nasce desligado)
-- [x] [AUTO] Odoo → `POST /webhook-odoo?k=<key>` `{_model,_id,_action}` com IDA desligada → 200 em <300 ms e evento gravado como `ignored`
-- [x] [AUTO] Fernanda → `PUT /api/v1/config/IDA_ENABLED {value:true}` → 200; `GET /config` reflete; `GET /health` reflete
-- [x] [AUTO] Odoo → mesmo POST com IDA ligada → evento `pending` (o worker relê a fatura)
-- [x] [AUTO] Asaas → `POST /webhook-asaas` (header `asaas-access-token`) com `PAYMENT_RECEIVED` → 200 em <2 s; 2º POST idêntico → 200 e **1** linha em `webhook_events` (dedupe por `id`)
-- [x] [AUTO] Fernanda → `GET /api/v1/charges` lista cobranças com cliente/boleto/conciliação; `?status=received` e `?q=` filtram; `GET /charges/:id` traz `reconciliations`, `exceptions`, `events`
-- [x] [AUTO] Fernanda → `GET /api/v1/exceptions?status=open` lista com a cobrança junta; `POST /exceptions/:id/resolve` (header `x-user`) → `status=resolved`, `resolvedBy=fernanda`
-- [x] [AUTO] Fernanda → `GET /api/v1/dashboard` aging bate com as cobranças abertas; `GET /health-report` traz `idaEnabled`, `openCharges`, `openExceptionsByType`, últimos jobs
-- [x] [AUTO] vitest `test/db/flow.test.ts`: ida (2 parcelas, idempotente, watermark), cancelamento, push do Odoo, volta (CONFIRMED→RECEIVED, duplicata 0×, malformado 200), divergência/juros, órfão, DELETED/RESTORED/REFUNDED, reconcile-daily, watchdog (fila/penalidade/silêncio), RLS → todos verdes
-- [x] [AUTO] vitest `test/db/console.test.ts`: auth, listas/detalhe/aging, reprocessar (evento reenfileirado → baixa), aceitar write-off, cliente corrigido → cobranças, gates R1/R3 → todos verdes
-- [x] [AUTO] vitest `test/sandbox/asaas.live.test.ts` (sandbox real): cliente com notificações OFF → ON, boleto → confirm → RECEIVED, filtro por externalReference, delete → verdes
-### 2.2 validações / erros
-- [x] [AUTO] `POST /webhook-odoo?k=<key>` com corpo não-JSON → 400; com `_id` string → 400; nenhum 500
-- [x] [AUTO] `POST /webhook-asaas` com token certo e corpo `{{{` → **200** (nunca derrubar a fila do Asaas) e linha `UNPARSEABLE` em `error`
-- [x] [AUTO] `PUT /config/ASAAS_API_KEY` → 400 (chave fora da allowlist); `PUT /config/IDA_ENABLED {value:"sim"}` → 400; `PUT /config/TOLERANCE_BRL {value:"0,50"}` → 400; `limit=abc`, `/exceptions/abc`, `due_from=garbage`, `status=opened`, corpo `null` → 400 (era 500)
-- [x] [AUTO] `POST /exceptions/999999/resolve` → 404 `{ok:false, code:'not_found'}`; reprocessar exceção já resolvida → 409; `GET /charges/999999` → 404
-### 2.3 permissões / multi-tenant   ← sempre, em app com múltiplos clientes/usuários
-- [x] [AUTO] `/api/v1/*` sem `Authorization` → 401; token errado → 401; motor sem `CONSOLE_TOKEN` → 503 (vitest)
-- [x] [AUTO] `POST /webhook-asaas` sem/errado `asaas-access-token` → 401; `POST /webhook-odoo` com `k` errado → **404** (não confirma que a rota existe)
-- [x] [AUTO] Cobrança `received` não volta a `cancelled` por evento `PAYMENT_DELETED` (máquina de estados, vitest) — recurso finalizado é imutável por rota genérica
+
+> Executado em 11/09/2026 contra `main @ c3c22de` + este branch, no Chromium via Playwright,
+> com o motor no `motor_demo` semeado por `npm run demo -- tudo`. **Navegador de verdade, não
+> teste estático** — foi trocar um pelo outro que deixou um P1 de renderização passar na #13.
+
+### 2.1 o que o P1 do review quebrava (regressão visual)
+- [x] [AUTO] `/console/` mostra **só** o cartão de login — `.painel` e `#confirma` computam
+      `display:none`, e todo elemento com `[hidden]` também (era o bug: `[hidden]` perdia do
+      `display:grid` na cascata, e login + painel vazio + diálogo apareciam juntos)
+- [x] [AUTO] o diálogo de confirmação abre com título, texto e **rótulo preenchido** no botão
+      vermelho (antes ele nascia visível e em branco)
+- [x] [AUTO] `DIFERENÇA A ACEITAR` é laranja, não azul — é a única exceção que gera escrita
+      irreversível no ERP, e azul é a cor de "nada a fazer"
+
+### 2.2 login e sessão
+- [x] [AUTO] senha errada → "E-mail ou senha incorretos.", sem dizer se o e-mail existe, e sem sessão
+- [x] [AUTO] senha certa → entra, o cartão de login some, cai em `#/excecoes`
+- [x] [AUTO] cookie `sdc_session` é `HttpOnly` + `SameSite=Lax`, e `document.cookie` volta vazio
+- [x] [AUTO] `sair` volta ao login e o cookie deixa de valer (`/exceptions` → 401)
+- [x] [AUTO] freio de tentativas e teto de concorrência — cobertos em `test/db/console-auth.test.ts`
+      (martelar o login no navegador só reexecutaria a suíte; o teto agora é testado com o freio
+      desligado, senão os dois 429 são indistinguíveis)
+
+### 2.3 fila de exceções
+- [x] [AUTO] lista as abertas com tipo, cliente, valor e data; filtros de status e tipo populados
+- [x] [AUTO] clicar abre o painel de detalhe com o `detail` legível e o motivo em destaque
+- [x] [AUTO] **a URL acompanha**: abrir escreve `#/excecoes/:id`, fechar limpa (corrigido — §3 U4)
+- [x] [AUTO] `#/excecoes/:id` numa aba nova abre aquele detalhe direto (é o link do e-mail de alerta)
+- [x] [AUTO] `#/excecoes/999999` → "Não achei o item 999999 — ele pode ter sido removido."
+- [x] [AUTO] `#/excecoes/abc` → cai na lista, sem tela quebrada
+- [x] [AUTO] **operável por teclado**: a linha recebe Tab, tem `role=button` e abre no Enter
+      (corrigido — §3 U3)
+
+### 2.4 as quatro ações
+- [x] [AUTO] `resolver` / `ignorar` / `reprocessar` disparam um POST e recarregam a fila
+- [x] [AUTO] triplo clique real em `ignorar` manda **um** POST só (o `disabled` segura)
+- [x] [AUTO] `aceitar diferença` — a única que escreve no ERP — exige confirmação, com o texto
+      dizendo que mexe no Odoo e não se desfaz
+- [x] [AUTO] o foco nasce em `cancelar`, nunca no botão destrutivo
+- [x] [AUTO] `Escape` com o diálogo aberto **cancela o diálogo**, mantém o painel e devolve o foco
+      ao botão que o abriu (corrigido — §3 U1, era o bloqueador)
+- [x] [AUTO] o foco fica preso no diálogo enquanto ele decide (corrigido — §3 U2)
+
+### 2.5 saúde, configuração e cobranças
+- [x] [AUTO] o card da fila do Asaas nos **quatro** estados: `PARADA · penalizações: 15` ·
+      `ok · penalizações: 0` · `sem webhook · registre com o job register-asaas-webhook` ·
+      `estado desconhecido · não consegui consultar o Asaas agora` (este último visto ao vivo, com
+      chave inválida — antes ele mentia "ok" quando a consulta falhava)
+- [x] [AUTO] saúde mostra emissão, aging nas 4 faixas, exceções por tipo, últimos jobs
+- [x] [AUTO] configuração lista os 4 gates com a explicação do que cada um faz
+- [x] [AUTO] cobranças lista com rodapé de paginação
+- [ ] [MANUAL] **paginação keyset com mais de uma página** — o demo semeia 7 cobranças, uma página
+      só; `próxima` nunca foi exercitada no navegador. Coberto por `test/db/console.test.ts`, não
+      por olho.
+- [ ] [MANUAL] **`ligar notificações para todos`** — o card existe e o diálogo confirma, mas clicar
+      chama o Asaas de verdade; sem chave de sandbox nesta máquina, o caminho de sucesso não foi
+      exercitado (o de falha, sim: vira aviso na tela).
 
 ## 3. CAÇA-UNKNOWNS  (o território — o DIFÍCIL, só usando aparece)
-> Depois que §2 passar, NÃO revalide o roteiro. TENTE QUEBRAR de formas que o roteiro não
-> previu, usando como um humano estressado usaria. Preencher DURANTE o uso, não lendo o diff.
-> Alvo: 3-5 achados reais (ou justificar "SEM-UNKNOWNS").
-Sondas executadas (curl no motor de pé + `job` contra o Odoo real expirado + testes dirigidos):
-- [x] Dados reais/legados: Odoo REAL com base expirada (303 → HTML 200)
-- [x] Deploy/migração não aplicada: `app_config` renomeada com o motor no ar; boot com migration faltando
-- [x] Permissões cruzadas: `x-user`; token de webhook; policies do Supabase
-- [x] Atomicidade: crash entre `registerPayment` e o insert; crash entre conciliação e status
-- [x] Volume: 500+ faturas com o mesmo `write_date`; fila com 100 eventos e Odoo lento
-- [x] Concorrência: 2 workers no mesmo tick; push × varredura na mesma fatura; worker × reconcile na mesma cobrança
-- [x] Estado de borda: `PAYMENT_RECEIVED` antes da cobrança existir; reprocessar exceção resolvida; fatura resetada/re-postada; testes sujando o banco de dev
-Achados (todos corrigidos e fixados em teste — `test/db/robustez.test.ts`, `flow.test.ts`, `console.test.ts`):
-- U1 **(P1)** Odoo devolvendo HTML 200 (base expirada) → motor registrou "baixa" com `odooPaymentId: null` e marcou `received` sem pagamento no Odoo. Repro: `ODOO_URL` da base expirada, `job worker` com um `PAYMENT_RECEIVED` pendente. Causa: `fetch` seguia redirect e aceitava não-JSON; `registerPayment` não verificava efeito; `receivePayment` aceitava `paymentId: null`. Fix: HTTP estrito (sem redirect, JSON obrigatório), verificação por residual antes×depois do wizard, parcela lida por id, status `exception` em falha definitiva.
-- U2 **(P1)** `sync-invoices` explodia com stack trace e nenhuma exceção/alerta. Fix: `runJob` abre `integration_error` (uma por vez); `health-report` mostra.
-- U3 **(P2)** sem `app_config` → 500 em `/health` e `/webhook-odoo`. Fix: `assertMigrated` no boot (motor e `job`), 503 com corpo genérico quando o banco cai (webhook do Odoo não reenvia — a varredura cobre).
-- U4 **(P2)** testes rodavam no banco de dev e deixavam `GO_LIVE_CUTOFF_DATE` setado. Fix: `motor_test` separado + reset a partir do registro `CONFIG_KEYS`.
-- U5 **(P2, aberto → #1)** `x-user` é asserção do cliente sob token compartilhado.
-- U6 **(P1)** crash entre `registerPayment` e `reconciliations.insert` → retry registrava 2º pagamento. Fix: parcela lida por id no Odoo (conciliada → fecha só do nosso lado, `ja_baixada_no_odoo`), `markReceived` transacional, `unique(reconciliations.charge_id)`.
-- U7 **(P1)** evento `PAYMENT_RECEIVED` com falha definitiva ia pra `error` sem exceção → perdido se o Odoo ficasse fora > janela do reconcile. Fix: exceção `payment_unmatched` apontando pro evento, reprocessável pelo console.
-- U8 **(P1)** dois workers (cron do Supabase + container) pegavam o mesmo evento. Fix: reserva `FOR UPDATE SKIP LOCKED` + `touch`; lock advisory por cobrança/fatura/parceiro.
-**Red Team (10/09, sobre o código já corrigido) — 18 achados, 5 críticos corrigidos:** watermark comparado a segundo contra `write_date` com microssegundos (a varredura giraria em círculo com 200+ faturas no mesmo segundo → balde de 1 s + drenagem por id); `withLock` segurando conexão do pool durante HTTP → pool separado pra locks + erros de conexão do pg como transientes; reprocesso de cobrança em `exception` re-rodava o wizard → chave de idempotência `memo` + adoção do pagamento avulso + `res_id` no detalhe; primeira execução sem `GO_LIVE_CUTOFF_DATE` emitiria boleto pro histórico → guard no config e fail-closed na ida; uma fatura com 5xx eterno congelava a varredura → contador por fatura, exceção na 3ª e a fila anda. Informativos corrigidos: `PAYMENT_DELETED` de boleto vivo, `insert` engolindo qualquer unique, boleto adotado divergente, `reconcile` ancorado no último sucesso + passe por cobranças vencidas, baixa manual com boleto pago concilia em vez de escalar, cliente adotado por CPF/CNPJ, `POST /api/v1/jobs/:name` pro cron do Supabase, compose com `restart`/`healthcheck`/`stop_grace_period`/`PG*`. Deferidos: #5 (créditos tardios), #6 (token de posse do claim).
 
-Do `/gstack-review` (8 especialistas + adversarial Claude + 2 passes do Codex), corrigidos no mesmo lote: webhook do Asaas tratado como verdade (evento forjado registrava pagamento) → releitura viva; `safeEqual` lançando com multibyte; ids do Asaas em path (`pay_1/../webhooks/x`); residual maior que a cobrança duplicava no retry; parcela sumida virava "paga"; `externalReference` vencia `asaasPaymentId`; `accept-writeoff` de pagamento estornado; watermark travado por falha permanente e por formato de data do Odoo; fatura re-postada/baixada por fora deixava boleto órfão; kill switch não valia pro push enfileirado; `money()` lançando no webhook → 500; corpo sem limite; entradas inválidas → 500; `enable-notifications` só pros clientes existentes; jobs sobrepostos; shutdown fechando o pool com escrita no meio; compose com Postgres em 0.0.0.0/senha fixa; runner de migração sem lock; índices faltando; policy do Supabase permitindo editar qualquer coluna.
+- **U1 (BLOQUEADOR, corrigido): `Escape` deixava o diálogo órfão, e o botão que escreve no ERP
+  continuava vivo.** Abrir uma exceção `writeoff_needed` → `aceitar diferença` → `Escape`: o
+  listener global de Escape fechava o **painel debaixo**, o diálogo ficava flutuando sobre a
+  lista, e a promessa de `confirmar()` nunca resolvia. Clicar em `aceitar e baixar` ali disparava
+  `POST /exceptions/3/accept-writeoff` — a baixa irreversível no Odoo de uma exceção que o
+  operador acabara de dispensar. Reproduzido no navegador, evidência em §4. Corrigido: o diálogo
+  captura o próprio Escape e cancela; o Escape global só fecha o painel com o diálogo fechado.
+- **U2 (corrigido): o diálogo não prendia o foco.** Tab saía na primeira parada e passeava pela
+  página coberta — teclado indo aonde o olho não vai, com um botão de escrita no ERP aberto.
+- **U3 (corrigido): a fila de exceções não era operável por teclado.** As linhas eram `div` com
+  `onclick`: sem Tab, sem Enter, sem anúncio de que dá para acionar. As ações eram alcançáveis,
+  mas não dava para **escolher** uma exceção sem mouse — para quem opera a fila o dia inteiro,
+  isso é o produto inteiro atrás do mouse.
+- **U4 (corrigido): o deep-link só funcionava de entrada.** Clicar numa exceção abria o painel e
+  deixava a URL em `#/excecoes`: não dava para copiar o link do que se estava vendo, F5 perdia o
+  lugar e o botão voltar não fechava o painel. O `fecharPainel` **já limpava** um id do hash que
+  ninguém nunca escrevia — a metade de saída nunca existiu.
+- **U5 (corrigido, veio de graça): teste que reprova sozinho todo dia às 09:59.** Ao rodar a suíte
+  depois das 10h, `o diário limpa sessão expirada` reprovou — no `main` limpo também. A sessão
+  "vencida ontem" nascia de `Date.now()` (tempo real) e era purgada contra o clock fixo do mundo
+  (2026-09-10T13:00Z): só passava enquanto o relógio real estivesse antes de 12:59 UTC. Estava na
+  linha **logo abaixo** do comentário que avisa sobre misturar os dois relógios. Quinta ocorrência
+  desta família no repo.
+- **U6 (não corrigido, decisão de produto): o demo não é fixture congelado.** Com `npm run dev` no
+  ar, o scheduler roda contra o `motor_demo` e muda o que está na tela — durante este QA, a
+  exceção `writeoff_needed` desapareceu sozinha e uma `payment_unmatched` nova apareceu. Para
+  demonstrar ao cliente, os 6 cenários semeados não são o que vai estar na tela cinco minutos
+  depois. → §5
 
 ## 4. Evidência
-- Roteiro §2 (curl): `scratchpad/qa-roteiro.log` (sessão de 09/09) — HTTP: health, webhooks, console, validações, permissões
-- Testes automatizados: `npm test` — **97 testes verdes** (10 arquivos: unit · fluxo · console · robustez, incluindo os casos do Red Team) · `scripts/with-op.sh npm run test:sandbox` — **3 verdes** no sandbox real do Asaas · `npm run test:odoo` pronto (somente-leitura, trava contra escrita) pra quando houver API key
-- Container: `docker compose --profile motor up --build` → `migrate` aplica 0001–0004 e sai, `motor` sobe, `/health` 200, console 401/400/200 (AC14)
-- Sondas §3 executadas contra o Odoo real expirado (a duplicata de teste, já vencida): nenhuma baixa falsa após as correções; `integration_error` visível no `health-report`
-- Review: `/gstack-review` (testing 19, maintainability 22, security 12, performance 11, data-migration 13, api-contract 14, simplification 6 advisory, adversarial Claude 24) + Codex adversarial 28 + Codex structured 2 P1 + **Red Team 18** → todos os P1 corrigidos; 8 issues pro resto
 
-## 5. Limitações conhecidas → issues
-- Identidade do operador é o header `x-user` (asserção do cliente) até o JWT do Supabase Auth → [#1](https://github.com/d-danielsun/sdc-motor/issues/1)
-- `registerPayment` é o desenho da spec: campos do wizard e tratamento de juros/multa/centavos (Q3) só se confirmam no S0.3, na duplicata → [#2](https://github.com/d-danielsun/sdc-motor/issues/2)
-- Regra do Odoo precisa filtrar `move_type = out_invoice` (senão cada write vira um POST) → [#3](https://github.com/d-danielsun/sdc-motor/issues/3)
-- RLS sem policy pro role do motor: funciona porque o role é owner; role menos privilegiado enxerga 0 linhas → tripwire no boot → [#4](https://github.com/d-danielsun/sdc-motor/issues/4)
-- `reconcile-daily`: créditos tardios e indisponibilidade maior que a janela; reenfileirar em lote → [#5](https://github.com/d-danielsun/sdc-motor/issues/5)
-- Reserva de eventos sem token de posse; notificações repetidas do Odoo → [#6](https://github.com/d-danielsun/sdc-motor/issues/6)
-- Migrations sem hash/ordem estrita/down → [#7](https://github.com/d-danielsun/sdc-motor/issues/7)
-- Console: DTO do health-report, paginação keyset, `enable-notifications` como job → [#8](https://github.com/d-danielsun/sdc-motor/issues/8)
-- Webhook do Asaas de verdade (URL pública) e UI Lovable sobre a API: fora deste gate (dependem de infra/Supabase)
+- Suíte: **244 testes verdes**, typecheck limpo nos dois projetos (`tsconfig.json` + `tsconfig.test.json`).
+- Navegador: Chromium via Playwright, roteiro §2 dirigido por script, 15 screenshots.
+  As correções de U1–U4 foram **reverificadas no navegador depois do patch** — os quatro voltaram
+  verdes, com `getComputedStyle` e captura de requisição como afirmação, não com o olho.
+- Mutação: as regressões novas de `console-spa.test.ts` reprovam quando o helper `itemClicavel` ou
+  o `history.replaceState` saem do `app.js`.
+- Zero `pageerror` no console do navegador em todo o roteiro.
+
+## 5. Follow-ups
+
+- **F1 — [MANUAL] paginação keyset com 2+ páginas nunca foi vista no navegador.** Precisa de um
+  cenário de demo com mais de 20 cobranças, ou de semear à mão. Coberto por teste de banco.
+- **F2 — [MANUAL] `ligar notificações para todos` no caminho de sucesso.** Precisa da chave de
+  sandbox do Asaas, que não existe nesta máquina (é um dos itens que o Dan guardou para o final).
+- **F3 — o demo drifta com o motor no ar (U6).** Opções: subir o motor sem scheduler para
+  demonstração, ou congelar o demo num banco que o scheduler não toca. Decisão de produto.
+- **F4 — `.env.example` ainda diz "CONSOLE_TOKEN — sem ele a API /api/v1 responde 503".**
+  Contrato morto desde a #13; o runbook já foi corrigido no review, o `.env.example` ficou. → corrigido neste PR.
+- **F5 — `resolver` e `ignorar` não confirmam.** São reversíveis no banco, mas **não há tela** para
+  reabrir uma exceção ignorada: na prática é porta de mão única por um clique errado. Não é
+  bloqueador; vale decidir se ganha confirmação ou se o console ganha "reabrir".
+- **F6 — falha de ação mostra "internal error" cru** para o operador. Mensagem que não diz o que
+  fazer é a mesma classe do 500 opaco que o review já fechou em outro caminho.

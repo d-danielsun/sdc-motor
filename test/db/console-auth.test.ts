@@ -193,11 +193,13 @@ describe("login do console (#13)", () => {
   it("o diário limpa sessão expirada", async () => {
     w = await world();
     const u = (await w!.auth.porEmail(USUARIO.email))!;
-    await w!.auth.abrirSessao(u.id, new Date(Date.now() - 86_400_000), 60);   // venceu ontem
+    // A sessão vencida nasce do clock do MUNDO, não de `Date.now()`. Com tempo real aqui, ela
+    // vencia em (agora_real − 24h + 60s) e era comparada com o clock fixo (2026-09-10T13:00Z):
+    // o teste passava de manhã e reprovava a partir das 09:59 BRT, todo dia. Achado do /qa-gate
+    // de 11/09/2026, e a quinta vez que misturar os dois relógios morde neste repo — desta vez
+    // na linha logo abaixo do comentário que avisava sobre isso.
+    await w!.auth.abrirSessao(u.id, new Date(w!.deps.clock.now().getTime() - 86_400_000), 60);   // venceu ontem
     expect(Number((await w!.pool.query("select count(*)::int as n from console_sessions")).rows[0].n)).toBe(2);
-    // O relógio do mundo de teste é FIXO. Purgar contra o tempo REAL apagava também a sessão viva
-    // assim que o dia virava (ela vence 12h depois do clock fixo) — teste que quebra sozinho de um
-    // dia para o outro. É a quarta vez nesta sessão que misturar os dois relógios morde.
     expect(await w!.auth.purgarExpiradas(w!.deps.clock.now())).toBe(1);
     expect((await w!.api("/charges")).status).toBe(200);   // a sessão viva sobreviveu
   });
