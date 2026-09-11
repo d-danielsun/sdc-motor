@@ -1,7 +1,7 @@
 // Repositório Postgres (pg). SQL explícito; sem ORM — o mesmo arquivo vale pra Supabase e pra qualquer Postgres.
 import type pg from "pg";
 import { OPEN_STATUSES } from "../../core/charges.js";
-import type { Repo } from "../../core/ports.js";
+import { FilaJaTemPendente, type Repo } from "../../core/ports.js";
 import type { Charge, ChargeStatus, CustomerMap, ExceptionType, ProcessStatus, StoredAsaasEvent, StoredOdooEvent } from "../../core/types.js";
 
 type Row = Record<string, unknown>;
@@ -29,6 +29,12 @@ const odooEventRow = (r: Row): StoredOdooEvent => ({ id: Number(r.id), claimToke
 // GC, rede lenta, container congelado — ainda tinha o id e sobrescrevia o resultado do novo dono.
 // Agora `mark` e `touch` exigem o token da reserva; afetar 0 linhas é o sinal de que a reserva foi
 // perdida, e o worker antigo registra e segue sem escrever nada.
+//
+// `is not distinct from` e não `($n is null or ...)`: sem token, a marcação casa APENAS com evento
+// que ninguém reservou. Era um furo com cara de conveniência — quem não passasse token sobrescrevia
+// qualquer coisa, inclusive uma reserva viva (achado do verificador da #15). O caso legítimo sem
+// token existe: `server.ts` marca um evento que ele mesmo acabou de inserir e que, se algum worker
+// já tiver reservado, não deve ser tocado.
 const claimSql = (table: string, cols: string) => `with c as (
     select id from ${table}
     where (process_status='pending' and (next_attempt_at is null or next_attempt_at <= $2))
@@ -37,8 +43,8 @@ const claimSql = (table: string, cols: string) => `with c as (
   update ${table} e set process_status='processing', locked_at=$2, claim_token=gen_random_uuid() from c where e.id=c.id returning ${cols}, e.claim_token`;
 const markSql = (table: string) => `update ${table} set process_status=$2, processed_at=case when $2 in ('done','error','ignored') then now() else processed_at end,
   error=coalesce($3, error), attempts=coalesce($4, attempts), next_attempt_at=$5, locked_at=null, claim_token=null
-  where id=$1 and ($6::uuid is null or claim_token = $6::uuid)`;
-const touchSql = (table: string) => `update ${table} set locked_at=$2 where id=$1 and ($3::uuid is null or claim_token = $3::uuid)`;
+  where id=$1 and claim_token is not distinct from $6::uuid`;
+const touchSql = (table: string) => `update ${table} set locked_at=$2 where id=$1 and claim_token is not distinct from $3::uuid`;
 const resetSql = (table: string) => `update ${table} set process_status='pending', attempts=0, next_attempt_at=null, error=null, processed_at=null, locked_at=null, claim_token=null where id=$1`;
 const purgeSql = (table: string) => `delete from ${table} where process_status in ('done','ignored') and processed_at < now() - ($1 || ' days')::interval`;
 
@@ -150,17 +156,38 @@ export function createPgRepo(pool: pg.Pool, lockPool: pg.Pool = pool): Repo {
         // `on conflict do nothing` sobre o índice parcial unique da 0008: notificação repetida do
         // Odoo para a mesma fatura, ainda pendente, é colapsada. null = já havia uma na fila.
         const r = await one<{ id: number }>(`insert into odoo_events (odoo_model, odoo_id, odoo_action, payload, process_status)
-          values ($1,$2,$3,$4::jsonb,$5) on conflict do nothing returning id`,
+          values ($1,$2,$3,$4::jsonb,$5)
+          on conflict (odoo_model, odoo_id) where process_status = 'pending' do nothing
+          returning id`,
           [e.odooModel, e.odooId, e.odooAction, JSON.stringify(e.payload), e.status ?? "pending"]);
         return r ? Number(r.id) : null;
       },
       async pending(limit, now) {
         return (await all(claimSql("odoo_events", "e.id, e.odoo_model, e.odoo_id, e.odoo_action, e.attempts"), [limit, now])).sort((a, b) => Number(a.id) - Number(b.id)).map(odooEventRow);
       },
-      async mark(id, status: ProcessStatus, o = {}) { return ((await db.query(markSql("odoo_events"), [id, status, o.error ?? null, o.attempts ?? null, o.nextAttemptAt ?? null, o.claimToken ?? null])).rowCount ?? 0) > 0; },
+      async mark(id, status: ProcessStatus, o = {}) {
+        // Devolver um evento para `pending` pode colidir com o índice parcial da 0008: já existe
+        // outra notificação pendente para a mesma fatura. Sem esta tradução, o 23505 subia CRU de
+        // dentro do catch do worker, matava o tick, e como o job `worker` roda o Odoo antes do
+        // Asaas, a volta do dinheiro parava junto — a cada minuto, para sempre. Achado do
+        // verificador da #15, reproduzido antes de corrigir.
+        try {
+          return ((await db.query(markSql("odoo_events"), [id, status, o.error ?? null, o.attempts ?? null, o.nextAttemptAt ?? null, o.claimToken ?? null])).rowCount ?? 0) > 0;
+        } catch (e) {
+          if (isUniqueViolation(e, "odoo_events_pendente_uniq")) throw new FilaJaTemPendente(`já existe notificação pendente para a mesma fatura (evento ${id})`);
+          throw e;
+        }
+      },
       async touch(id, now, claimToken) { return ((await db.query(touchSql("odoo_events"), [id, now, claimToken ?? null])).rowCount ?? 0) > 0; },
       async reset(id) { await db.query(resetSql("odoo_events"), [id]); },
-      async requeueFromError(id) { return ((await db.query(`${resetSql("odoo_events")} and process_status='error'`, [id])).rowCount ?? 0) > 0; },
+      async requeueFromError(id) {
+        try {
+          return ((await db.query(`${resetSql("odoo_events")} and process_status='error'`, [id])).rowCount ?? 0) > 0;
+        } catch (e) {
+          if (isUniqueViolation(e, "odoo_events_pendente_uniq")) throw new FilaJaTemPendente(`já existe notificação pendente para a mesma fatura (evento ${id})`);
+          throw e;
+        }
+      },
       async purgeProcessedOlderThan(days) { const r = await db.query(purgeSql("odoo_events"), [String(days)]); return r.rowCount ?? 0; },
     },
     reconciliations: {

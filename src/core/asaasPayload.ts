@@ -28,6 +28,7 @@ export function normalizeAsaasPayment(raw: unknown): AsaasPayment | null {
     paymentDate: str(r.paymentDate),
     clientPaymentDate: str(r.clientPaymentDate),
     creditDate: str(r.creditDate),
+    estimatedCreditDate: str(r.estimatedCreditDate),
     externalReference: str(r.externalReference),
     bankSlipUrl: str(r.bankSlipUrl),
     invoiceUrl: str(r.invoiceUrl),

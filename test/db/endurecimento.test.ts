@@ -242,3 +242,112 @@ describe("console tipado e paginação (#8)", () => {
     expect(chamadas, "rechamou o Asaas para quem já estava ligado").toBe(0);
   });
 });
+
+// ── o que o verificador da #15 achou, virado em teste ───────────────────────
+describe("achados do verificador (#15)", () => {
+  it("P1: erro transitório com outra notificação pendente NÃO mata o worker", async () => {
+    // A bomba: A reservada (sai do predicado do índice parcial) → o Odoo re-notifica a mesma
+    // fatura → B entra como pendente → A falha transitoriamente → devolver A para `pending` colide
+    // com B. O 23505 subia CRU de dentro do catch, matava o tick, e como o job `worker` roda o
+    // Odoo ANTES do Asaas, a volta do dinheiro parava junto. A cada minuto, para sempre.
+    w = await world();
+    const { processOdooEvents } = await import("../../src/core/index.js");
+    w.odoo.addInvoice({ id: 900, name: "INV/900", partnerId: 10, lines: [{ id: 9001, dateMaturity: "2026-10-01", amount: "10.00" }] });
+    w.odoo.addPartner({ id: 10, name: "Cliente", vat: CNPJ_OK });
+    const a = (await w.deps.repo.odooEvents.insert({ odooModel: "account.move", odooId: 900, odooAction: null, payload: {} }))!;
+    await w.deps.repo.odooEvents.pending(10, w.deps.clock.now());   // A reservada
+    const b = await w.deps.repo.odooEvents.insert({ odooModel: "account.move", odooId: 900, odooAction: null, payload: {} });
+    expect(b).toBeGreaterThan(0);
+
+    // A volta a ficar reservável e falha com erro transitório
+    await w.pool.query("update odoo_events set locked_at = $2 where id=$1", [a, new Date(w.deps.clock.now().getTime() - 20 * 60_000)]);
+    w.odoo.getInvoice = async () => { throw Object.assign(new Error("odoo 503"), { transient: true }); };
+
+    await expect(processOdooEvents(w.deps), "o worker morreu — a bomba ainda está armada").resolves.toBeTruthy();
+    const linhas = (await w.pool.query("select id, process_status, error from odoo_events order by id")).rows;
+    // O lote pega as DUAS (A reservável de novo, B pendente): a primeira volta para a fila e a
+    // segunda colide. O invariante é que ninguém morre e a colisão vira `ignored` com o motivo.
+    const status = linhas.map((l) => String(l.process_status)).sort();
+    expect(status, `estados inesperados: ${status}`).toEqual(["ignored", "pending"]);
+    const ignorada = linhas.find((l) => l.process_status === "ignored");
+    expect(String(ignorada?.error)).toContain("já existe notificação pendente");
+    expect(a).toBeGreaterThan(0);
+  });
+
+  it("P1: o worker de Asaas roda mesmo quando o de Odoo tropeça na colisão", async () => {
+    w = await world();
+    const { runJob } = await import("../../src/app/scheduler.js");
+    const a = (await w.deps.repo.odooEvents.insert({ odooModel: "account.move", odooId: 901, odooAction: null, payload: {} }))!;
+    await w.deps.repo.odooEvents.pending(10, w.deps.clock.now());
+    await w.deps.repo.odooEvents.insert({ odooModel: "account.move", odooId: 901, odooAction: null, payload: {} });
+    await w.pool.query("update odoo_events set locked_at = $2 where id=$1", [a, new Date(w.deps.clock.now().getTime() - 20 * 60_000)]);
+    w.odoo.getInvoice = async () => { throw Object.assign(new Error("odoo 503"), { transient: true }); };
+
+    const r = await runJob(w.deps, "worker") as { asaas?: unknown } | null;
+    expect(r, "o job worker inteiro caiu").not.toBeNull();
+    expect(r?.asaas, "o processamento do Asaas nem chegou a rodar").toBeDefined();
+  });
+
+  it("P1: requeue-all que falha não escreve na tabela ERRADA", async () => {
+    // As duas filas têm sequência própria começando em 1, então id colide o tempo todo. O catch
+    // escrevia sempre em `odoo_events`: uma notificação sem relação nenhuma virava `ignored`, e o
+    // boleto dela nunca era emitido.
+    w = await world();
+    const vitima = (await w.deps.repo.odooEvents.insert({ odooModel: "account.move", odooId: 950, odooAction: null, payload: {} }))!;
+    const evento = (await w.deps.repo.asaasEvents.insert({ asaasEventId: "ev", eventType: "PAYMENT_RECEIVED", asaasPaymentId: "pay_x", payload: {} }))!;
+    expect(vitima).toBe(evento);   // mesmo id nas duas tabelas: é o caso comum
+    await w.deps.repo.asaasEvents.mark(evento, "error", { error: "odoo fora" });
+    await w.deps.repo.exceptions.open({ type: "payment_unmatched", refTable: "webhook_events", refId: evento, detail: {} });
+
+    // força a falha no caminho do webhook_events
+    const original = w.deps.repo.asaasEvents.requeueFromError;
+    w.deps.repo.asaasEvents.requeueFromError = async () => { throw new Error("erro transitório do banco"); };
+    const r = await requeueAllByType(w.deps, "payment_unmatched");
+    w.deps.repo.asaasEvents.requeueFromError = original;
+
+    expect(r).toMatchObject({ ok: true, detail: { requeued: 0, skipped: 1 } });
+    const intacta = (await w.pool.query("select process_status, error from odoo_events where id=$1", [vitima])).rows[0];
+    expect(intacta, "a notificação do Odoo foi marcada por engano").toMatchObject({ process_status: "pending", error: null });
+  });
+
+  it("P2: marcar SEM token não sobrescreve evento reservado por outro", async () => {
+    w = await world();
+    const id = (await w.deps.repo.asaasEvents.insert({ asaasEventId: "e9", eventType: "PAYMENT_RECEIVED", asaasPaymentId: "pay_9", payload: {} }))!;
+    // sem reserva: marcar sem token é legítimo (é o que o receptor do webhook faz)
+    expect(await w.deps.repo.asaasEvents.mark(id, "ignored")).toBe(true);
+    await w.deps.repo.asaasEvents.reset(id);
+
+    const [reservado] = await w.deps.repo.asaasEvents.pending(10, w.deps.clock.now());
+    // agora ESTÁ reservado: quem não tem o token não escreve
+    expect(await w.deps.repo.asaasEvents.mark(id, "error", { error: "sem token" })).toBe(false);
+    expect(await w.deps.repo.asaasEvents.touch(id, new Date())).toBe(false);
+    expect(await w.deps.repo.asaasEvents.mark(id, "done", { claimToken: reservado!.claimToken })).toBe(true);
+  });
+
+  it("P2: tripwire não recusa banco saudável com uma chave apagada, mas avisa", async () => {
+    w = await world();
+    const { assertLeitura } = await import("../../src/adapters/db/migrations.js");
+    const avisos: string[] = [];
+    await w.pool.query("delete from app_config where key='ASAAS_PENALIZED_LAST'");
+    await expect(assertLeitura(w.pool, (m) => avisos.push(m))).resolves.toBeUndefined();
+    expect(avisos[0]).toContain("ASAAS_PENALIZED_LAST");
+    expect(avisos[0]).toContain("não RLS");
+
+    // mas NENHUMA chave visível continua sendo recusa: é a assinatura de RLS bloqueando
+    await w.pool.query("delete from app_config");
+    await expect(assertLeitura(w.pool)).rejects.toThrow(/NENHUMA das/);
+  });
+
+  it("P1: banco anterior à 0008 (sem a coluna de hash) migra em vez de quebrar", async () => {
+    // O upgrade quebrava em TODO ambiente existente: `create table if not exists` é no-op, então a
+    // coluna nunca era criada e o backfill rodava antes da 0008.
+    w = await world();
+    const { applyMigrations } = await import("../../src/adapters/db/migrations.js");
+    // `if exists` porque uma rodada anterior pode ter deixado a coluna caída: teste que só passa
+    // em banco limpo é teste que falha quando mais importa.
+    await w.pool.query("alter table schema_migrations drop column if exists content_sha256");
+    await expect(applyMigrations(w.pool)).resolves.toEqual([]);
+    const n = Number((await w.pool.query("select count(*)::int as n from schema_migrations where content_sha256 is null")).rows[0].n);
+    expect(n, "o backfill não preencheu os hashes").toBe(0);
+  });
+});

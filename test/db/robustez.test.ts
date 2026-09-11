@@ -231,13 +231,16 @@ describe("U8 — dois workers no mesmo tick", () => {
     for (let i = 0; i < 4; i++) await w.deps.repo.odooEvents.insert({ odooModel: "account.move", odooId: i, odooAction: null, payload: {} });
     const now = w.deps.clock.now();
     const [a, b] = await Promise.all([w.deps.repo.asaasEvents.pending(4, now), w.deps.repo.asaasEvents.pending(4, now)]);
-    const ids = [...a, ...b].map((e) => e.id);
+    const reservados = [...a, ...b];
+    const ids = reservados.map((e) => e.id);
     expect(new Set(ids).size).toBe(6); expect(ids).toHaveLength(6);
     const [c, d] = await Promise.all([w.deps.repo.odooEvents.pending(3, now), w.deps.repo.odooEvents.pending(3, now)]);
     expect(new Set([...c, ...d].map((e) => e.id)).size).toBe(4);
     expect(await w.deps.repo.asaasEvents.pending(10, now)).toHaveLength(0);                      // tudo reservado
     const later = new Date(now.getTime() + (CLAIM_TTL_MINUTES + 1) * 60_000);
-    await w.deps.repo.asaasEvents.touch(ids[0]!, new Date(later.getTime() - 60_000));         // este ainda está sendo trabalhado
+    // Com o token da própria reserva: desde a #15, `touch` sem token não renova lock de ninguém —
+    // era assim que um worker que voltou depois do TTL estendia a reserva de quem assumiu.
+    await w.deps.repo.asaasEvents.touch(ids[0]!, new Date(later.getTime() - 60_000), reservados[0]!.claimToken);
     expect((await w.deps.repo.asaasEvents.pending(10, later)).map((e) => e.id)).not.toContain(ids[0]);
     expect(await w.deps.repo.asaasEvents.pending(10, new Date(later.getTime() + 20 * 60_000))).toHaveLength(6);
   });

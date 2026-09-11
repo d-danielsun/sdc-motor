@@ -75,7 +75,7 @@ export function createConsoleQueries(db: { query: pg.Pool["query"] }): ConsoleQu
         const p = [...params, f.after.dueDate, f.after.id];
         const corte = `(c.due_date, c.id) > ($${p.length - 1}::date, $${p.length})`;
         const rows = (await db.query(`${CHARGE_SELECT} ${where.length ? `where ${where.join(" and ")} and ${corte}` : `where ${corte}`} order by c.due_date asc, c.id asc limit $${p.length + 1}`, [...p, limit])).rows as Row[];
-        return page(rows, total, limit, 0, chargeRow);
+        return page(rows, total, limit, 0, chargeRow);   // `offset: 0` no modo keyset: não há deslocamento, o corte é o cursor
       }
       const rows = (await db.query(`${CHARGE_SELECT} ${w} order by c.due_date asc, c.id asc limit $${params.length + 1} offset $${params.length + 2}`, [...params, limit, offset])).rows as Row[];
       return page(rows, total, limit, offset, chargeRow);

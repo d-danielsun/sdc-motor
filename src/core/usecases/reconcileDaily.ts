@@ -48,7 +48,7 @@ export async function reconcileDaily(deps: Deps, o: { lookbackDays?: number } = 
         try {
           const r = await receivePayment(deps, p, "reconcile");
           contabiliza(r);
-          if (chave === "creditDateFrom" && r === "received") s.byCreditDate++;
+          if (chave === "creditDateFrom" && r !== "not_received") s.byCreditDate++;   // qualquer resgate conta: `already` também é informação
         } catch (e) {
           s.errors++;
           deps.log("reconcile: pagamento com erro", { asaasPaymentId: p.id, error: (e as Error).message, passe: chave });

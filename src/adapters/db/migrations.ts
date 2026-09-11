@@ -94,10 +94,19 @@ export async function applyMigrations(db: Q, o: { dir?: string; onApplied?: (f: 
   const dir = o.dir ?? MIGRATIONS_DIR;
   await db.query("select pg_advisory_lock(hashtext('sdc-motor:migrate'))");
   try {
-    // `content_sha256` entra JÁ no bootstrap, e não só na 0008: num banco novo o insert da
-    // própria 0001 precisa da coluna. Sem isso, banco novo não migra — pego rodando o rollback
-    // num banco descartável, que é a única forma de ver.
+    // Duas linhas, duas falhas diferentes que já aconteceram:
+    //
+    // O `create table` traz `content_sha256` porque num banco NOVO o insert da própria 0001 precisa
+    // da coluna — a 0008 só roda depois. Peguei isso migrando um banco descartável do zero.
+    //
+    // O `alter table` existe porque `create table if not exists` é NO-OP num banco que já tem a
+    // tabela: num ambiente anterior à 0008, a coluna nunca era criada, o backfill rodava antes da
+    // 0008 e o upgrade quebrava com `column "content_sha256" does not exist`. Ou seja: este PR não
+    // deployava em NENHUM ambiente existente. Achado do verificador da #15 e reproduzido num banco
+    // montado à mão no estado anterior — nenhum teste pegaria, porque os bancos locais já tinham
+    // a 0008 aplicada.
     await db.query("create table if not exists schema_migrations (name text primary key, applied_at timestamptz not null default now(), content_sha256 text)");
+    await db.query("alter table schema_migrations add column if not exists content_sha256 text");
 
     // Integridade ANTES de aplicar qualquer coisa: se o disco discorda do banco, aplicar mais
     // migrations em cima só piora. Roda depois do create table para não estourar em banco novo.
@@ -148,9 +157,17 @@ export class LeituraBloqueada extends Error {}
  *
  * Falhar no boot é barato. Descobrir isso pela fatura duplicada do cliente, não.
  */
-export async function assertLeitura(db: Q): Promise<void> {
+export async function assertLeitura(db: Q, log?: (msg: string) => void): Promise<void> {
   const { rows } = await db.query("select key from app_config where key = any($1::text[])", [CANARIOS]);
   if (rows.length >= CANARIOS.length) return;
+  // Ver ALGUMAS chaves prova que a leitura funciona: o que falta é dado, não acesso. Recusar aqui
+  // seria falso positivo — e a suíte de teste apaga `app_config` de propósito, o que travaria
+  // qualquer `npm run job` depois dela. Aviso alto, mas o motor sobe.
+  if (rows.length > 0) {
+    const faltando = CANARIOS.filter((k) => !rows.some((r) => r.key === k));
+    log?.(`app_config está incompleto: faltam ${faltando.join(", ")}. A leitura funciona (${rows.length} de ${CANARIOS.length} visíveis), então isto é dado apagado, não RLS. O motor sobe com os defaults do código.`);
+    return;
+  }
 
   // Diagnóstico: sem isto, a mensagem seria "não consigo ler" e a pessoa ficaria adivinhando.
   let quem = "?", temSelect = "?", ehDono = "?", rlsLigado = "?";
@@ -166,7 +183,7 @@ export async function assertLeitura(db: Q): Promise<void> {
     ? `o role \`${quem}\` NÃO tem privilégio de SELECT em app_config — é permissão, não RLS. Rode: grant select on all tables in schema public to ${quem};`
     : ehDono === "false" && rlsLigado === "true"
       ? `o role \`${quem}\` tem SELECT mas NÃO é dono da tabela, e RLS está ligado sem policy para ele — o Postgres devolve zero linhas, sem erro. Use o role dono, ou dê BYPASSRLS a ele, ou crie policies.`
-      : `o role \`${quem}\` deveria enxergar as ${CANARIOS.length} chaves da migration 0001 e enxergou ${rows.length}. Banco certo? \`select current_database()\` e confira se aponta para o banco migrado.`;
+      : `o role \`${quem}\` não enxergou NENHUMA das ${CANARIOS.length} chaves que a migration 0001 semeia. Banco certo? Rode \`select current_database()\` e confira se aponta para o banco migrado.`;
 
   throw new LeituraBloqueada(
     `o motor consegue conectar mas NÃO consegue ler o que o banco tem, e subir assim faria ele ` +

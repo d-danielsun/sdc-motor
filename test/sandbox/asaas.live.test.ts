@@ -44,3 +44,23 @@ d("Asaas sandbox (vivo)", () => {
     expect(Array.isArray(list)).toBe(true);
   });
 });
+
+// A CONFIRMAR contra a API viva (#15): o segundo passe do reconcile filtra por
+// `estimatedCreditDate[ge]`, e esse nome de parâmetro veio da documentação, não de teste. Se o
+// Asaas IGNORAR um parâmetro que não conhece, o passe deixa de ter janela e relê o histórico
+// inteiro todo dia — falha silenciosa e caríssima. Este teste é o que fecha essa dúvida.
+d("filtro por data de crédito (spike do #15)", () => {
+  const asaas = new AsaasHttpClient({ url, apiKey: key! });
+  it("estimatedCreditDate[ge] é reconhecido: uma data futura devolve MENOS que uma data antiga", async () => {
+    const conta = async (f: Parameters<typeof asaas.listPayments>[0]) => {
+      let n = 0;
+      for await (const _ of asaas.listPayments(f)) if (++n >= 50) break;
+      return n;
+    };
+    const antigo = await conta({ status: "RECEIVED", creditDateFrom: "2020-01-01" });
+    const futuro = await conta({ status: "RECEIVED", creditDateFrom: "2999-01-01" });
+    console.log(`   · desde 2020: ${antigo} · desde 2999: ${futuro}`);
+    // Se o parâmetro fosse ignorado, os dois números seriam iguais.
+    expect(futuro, "o Asaas parece IGNORAR estimatedCreditDate[ge] — o passe por crédito não tem janela").toBeLessThan(Math.max(1, antigo));
+  });
+});

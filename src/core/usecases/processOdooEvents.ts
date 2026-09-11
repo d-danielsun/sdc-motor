@@ -1,7 +1,7 @@
 // Push da ida: o evento só traz o id; a fatura é relida no Odoo (gatilho, não fonte de verdade).
 import { ODOO_EVENT_BATCH } from "../limits.js";
 import type { Deps } from "../ports.js";
-import { isTransient } from "../ports.js";
+import { FilaJaTemPendente, isTransient } from "../ports.js";
 import { handleInvoice } from "./handleInvoice.js";
 import { backoff } from "./retry.js";
 
@@ -28,7 +28,18 @@ export async function processOdooEvents(deps: Deps, o: { limit?: number } = {}):
     } catch (e) {
       const attempts = ev.attempts + 1;
       const next = isTransient(e) ? backoff(attempts, clock.now()) : null;
-      if (next) await repo.odooEvents.mark(ev.id, "pending", { attempts, nextAttemptAt: next, error: (e as Error).message, ...posse });
+      if (next) {
+        try {
+          await repo.odooEvents.mark(ev.id, "pending", { attempts, nextAttemptAt: next, error: (e as Error).message, ...posse });
+        } catch (colisao) {
+          // Outra notificação da mesma fatura já está na fila e vai fazer este trabalho. Reenfileirar
+          // esta seria duplicar por duplicar — e insistir travava as duas filas.
+          if (!(colisao instanceof FilaJaTemPendente)) throw colisao;
+          await repo.odooEvents.mark(ev.id, "ignored", { error: `não reenfileirado: ${colisao.message}`, attempts, ...posse });
+          out.ignored++;
+          continue;
+        }
+      }
       else {
         await repo.odooEvents.mark(ev.id, "error", { attempts, error: (e as Error).message, ...posse });
         await repo.exceptions.openOnce({ type: "charge_create_failed", refTable: "odoo_events", refId: ev.id, detail: { odooId: ev.odooId, reason: isTransient(e) ? "retries esgotados" : "erro definitivo", error: (e as Error).message } });

@@ -292,7 +292,8 @@ export function createConsoleApi(cd: ConsoleDeps): Hono {
   // O progresso vive em app_config.NOTIFICATIONS_PROGRESS e aparece no health-report; retomar é
   // chamar de novo, porque quem já está ligado não é rechamado.
   api.post("/customers/enable-notifications", async (c) => {
-    const total = (await cd.deps.repo.customers.listSynced()).length;
+    // Mesmo filtro que o job usa: contar sem filtrar prometia um total maior que o do progresso.
+    const total = (await cd.deps.repo.customers.listSynced()).filter((c) => c.asaasCustomerId).length;
     void enableCustomerNotifications(cd.deps).catch((e) => cd.deps.log("enable-notifications falhou", { error: (e as Error).message }));
     return c.json({ ok: true, action: "notifications_enabling", detail: { total } }, 202);
   });

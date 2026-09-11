@@ -177,6 +177,11 @@ export interface Deps {
   notify?: Notifier;
 }
 
+/** Devolver um evento à fila colidiu com outro JÁ pendente para a mesma fatura. Não é falha: é o
+ *  índice parcial da 0008 dizendo que esse trabalho já está enfileirado. Quem chama decide (o
+ *  worker marca `ignored`), e o núcleo não precisa conhecer nome de índice para isso. */
+export class FilaJaTemPendente extends Error {}
+
 /** Erro de borda que vale retry (5xx, timeout, rede, banco caindo). Adaptadores marcam; o núcleo só lê. */
 export interface TransientError extends Error { transient: true }
 const PG_TRANSIENT = new Set(["ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "EPIPE", "08000", "08001", "08003", "08004", "08006", "40001", "40P01", "53300", "57P01", "57014"]);

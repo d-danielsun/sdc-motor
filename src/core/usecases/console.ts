@@ -3,7 +3,7 @@ import { CONSOLE_CONFIG_KEYS, EXC_TYPES, fail, type ActionResult, type ConsoleCo
 import { ensureCustomer } from "../customers.js";
 import { TOLERANCE_MAX_BRL } from "../limits.js";
 import { toCents } from "../money.js";
-import type { Deps } from "../ports.js";
+import { FilaJaTemPendente, type Deps } from "../ports.js";
 import { RECEIVED_STATUSES, receivePayment } from "../receive.js";
 import { externalRefForPartner, type ExceptionType } from "../types.js";
 import { handleInvoice } from "./handleInvoice.js";
@@ -158,10 +158,16 @@ export async function requeueAllByType(deps: Deps, tipo: string): Promise<Action
       const voltou = await fila.requeueFromError(ex.refId);
       if (voltou) requeued++; else skipped++;
     } catch (e) {
-      // O índice parcial unique da 0008 recusa dois `pending` para a mesma fatura: já existe outra
-      // notificação na fila fazendo o mesmo trabalho. Vira `ignored` com motivo, e conta em skipped.
+      // Só a colisão do índice parcial vira `ignored`, e na fila CERTA — a versão anterior
+      // escrevia sempre em `odoo_events`, e como as duas tabelas têm sequência própria começando
+      // em 1, isso marcava como ignorada uma notificação sem relação nenhuma, cujo boleto então
+      // nunca era emitido. Achado do verificador da #15.
       skipped++;
-      await repo.odooEvents.mark(ex.refId, "ignored", { error: `não reenfileirado: já existe notificação pendente para a mesma fatura (${(e as Error).message.slice(0, 120)})` }).catch(() => undefined);
+      if (e instanceof FilaJaTemPendente) {
+        await fila.mark(ex.refId, "ignored", { error: `não reenfileirado: ${e.message}` }).catch(() => undefined);
+      } else {
+        deps.log("requeue-all: evento não reenfileirado", { excecaoId: ex.id, fila: ex.refTable, eventoId: ex.refId, error: (e as Error).message });
+      }
     }
   }
   return { ok: true, action: "requeued", detail: { requeued, skipped } };
