@@ -324,7 +324,7 @@ describe("exceção de falha travada", () => {
     await mundo.pool.query("update exceptions set created_at=$1 where type=$2 and status='open'", [quando, tipo]);
   }
 
-  it("baixa não feita há mais de 30 min manda e-mail, e o texto diz que o dinheiro entrou", async () => {
+  it("baixa não feita há mais de 30 min manda e-mail que NÃO afirma o que não sabe", async () => {
     w = await world();
     await w.deps.repo.config.set("CONSOLE_PUBLIC_URL", "https://motor.exemplo.com.br");
     await travada(w, "payment_unmatched", 31);
@@ -332,10 +332,15 @@ describe("exceção de falha travada", () => {
     expect(s.travadas).toEqual({ payment_unmatched: 1 });
     expect(s.alertas["travada:payment_unmatched"]).toBe("enviado");
     const email = w.notify.ultimo!;
-    expect(email.assunto).toBe("Motor SDC: pagamento recebido e NÃO baixado no Odoo");
-    expect(email.corpo).toContain("O dinheiro entrou");
+    expect(email.assunto).toBe("Motor SDC: 1 exceção(ões) de pagamento não conciliado sem resolução");
     expect(email.corpo).toContain("31 minutos");
-    expect(email.corpo).toContain("sem permissão de lançar pagamento");   // a causa mais comum, no corpo
+    expect(email.corpo).toContain("reprocessar");
+    // O INVARIANTE que o review adversarial do Codex arrancou: `payment_unmatched` também é aberto
+    // para webhook FORJADO (pagamento que não existe no Asaas). O alerta não pode afirmar que
+    // entrou dinheiro, porque em parte dos casos não entrou nada — e mandar o financeiro procurar
+    // um pagamento inexistente é pior que não avisar.
+    expect(email.corpo, "o alerta voltou a afirmar entrada de dinheiro que o tipo não garante").not.toMatch(/o dinheiro entrou/i);
+    expect(email.corpo).toContain("evento que não corresponde a pagamento nenhum");   // diz que HÁ mais de um caso
     expect(email.link, "sem link o e-mail das 3h não leva a lugar nenhum").toMatch(/#\/excecoes\/\d+$/);
   });
 
@@ -374,10 +379,41 @@ describe("exceção de falha travada", () => {
     expect(s.travadas).toEqual({ payment_unmatched: 1, charge_create_failed: 1 });
     expect(w.notify.enviados).toHaveLength(2);
     expect(w.notify.enviados.map((e) => e.assunto).sort()).toEqual([
-      "Motor SDC: 1 exceção(ões) de charge_create_failed travada(s)",
-      "Motor SDC: pagamento recebido e NÃO baixado no Odoo",
+      "Motor SDC: 1 exceção(ões) de cobrança não processada sem resolução",
+      "Motor SDC: 1 exceção(ões) de pagamento não conciliado sem resolução",
     ]);
-    expect(w.notify.enviados.find((e) => e.assunto.includes("charge_create_failed"))!.corpo).toContain("Nenhum");
+    // `charge_create_failed` cobre criação E cancelamento: o texto não pode dizer que nenhum
+    // boleto foi enviado, porque no caso do cancelamento existe boleto vivo e pagável.
+    const emissao = w.notify.enviados.find((e) => e.assunto.includes("cobrança não processada"))!;
+    expect(emissao.corpo, "voltou a afirmar que nenhum boleto foi enviado").not.toMatch(/nenhum boleto foi enviado/i);
+    expect(emissao.corpo).toContain("ainda pagável");
+  });
+
+  it("job que VOLTOU a funcionar fecha a própria exceção — e o alerta não sai (achado do Codex)", async () => {
+    // Sem isto: `sync-invoices` falha uma vez, volta a rodar no tick seguinte, e 30 minutos depois
+    // o financeiro recebe e-mail dizendo que o job está falhando. Histórico não encerrado virando
+    // afirmação sobre o presente é o mesmo defeito do "ok" falso no card da fila, pelo avesso.
+    w = await world();
+    const { createJobRunner } = await import("../../src/app/scheduler.js");
+    const jobs = createJobRunner(w.deps);
+
+    // falha: abre integration_error em jobs:watchdog
+    w.deps.asaas.getWebhook = async () => { throw new Error("asaas 500 boom"); };
+    await w.deps.repo.config.set("ASAAS_WEBHOOK_ID", "wh_x");
+    await jobs.run("watchdog");
+    const abertas = async () => Number((await w!.pool.query("select count(*)::int as n from exceptions where status='open' and ref_table='jobs:watchdog'")).rows[0].n);
+    expect(await abertas(), "a falha do job não abriu exceção").toBe(1);
+
+    // envelhece a exceção além do limite e o job VOLTA a funcionar
+    await w.pool.query("update exceptions set created_at=$1 where ref_table='jobs:watchdog'", [new Date(w.deps.clock.now().getTime() - 60 * 60_000)]);
+    delete (w.asaas as unknown as Record<string, unknown>).getWebhook;
+    await jobs.run("watchdog");
+    expect(await abertas(), "o sucesso do job não fechou a exceção da falha anterior").toBe(0);
+
+    // e o watchdog seguinte não manda e-mail de "erro de integração"
+    const antes = w.notify.enviados.length;
+    await watchdog(w.deps);
+    expect(w.notify.enviados.slice(antes).filter((e) => e.assunto.includes("erro de integração")), "alertou sobre um job que já voltou").toHaveLength(0);
   });
 
   it("segundo tick dentro da janela de 6h não repete, e depois dela repete", async () => {

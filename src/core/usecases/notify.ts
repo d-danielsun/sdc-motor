@@ -160,30 +160,39 @@ export const alertaSilencio = (d: { horas: number; ultimoEventoEm: string | null
 export const alertaTravada = (d: { tipo: ExceptionType; total: number; minutos: number; excecaoId?: number | null }): Alert => ({
   tipo: d.tipo,
   chave: `travada:${d.tipo}`,
-  assunto: d.tipo === "payment_unmatched"
-    ? "Motor SDC: pagamento recebido e NÃO baixado no Odoo"
-    : `Motor SDC: ${d.total} exceção(ões) de ${d.tipo} travada(s)`,
+  assunto: `Motor SDC: ${d.total} exceção(ões) de ${ROTULO_TRAVA[d.tipo] ?? d.tipo} sem resolução`,
   corpo: [
-    ...(d.tipo === "payment_unmatched"
-      ? ["O Asaas confirmou pagamento e o motor não conseguiu dar baixa no Odoo. O dinheiro entrou;",
-         "a fatura do cliente continua aberta no ERP. Cada hora aqui é uma hora de divergência entre",
-         "o extrato e o contas a receber."]
-      : d.tipo === "charge_create_failed"
-      ? ["O motor não conseguiu criar a cobrança no Asaas para uma fatura postada no Odoo. Nenhum",
-         "boleto foi enviado ao cliente, e não vai ser reenviado sozinho depois de esgotar os retries."]
-      : ["Um job falhou de forma definitiva e a exceção continua aberta. A parte do ciclo que ele",
-         "cobre não está acontecendo."]),
+    // O texto fala do ESTADO (há exceção parada que ninguém tratou) e não do que aconteceu.
+    // A versão anterior afirmava, para `payment_unmatched`, que "o dinheiro entrou" — mas esse
+    // mesmo tipo é aberto para webhook FORJADO (pagamento que não existe no Asaas), onde não
+    // entrou nada; e para `charge_create_failed` dizia "nenhum boleto foi enviado", quando esse
+    // tipo também cobre falha de CANCELAMENTO, em que existe um boleto vivo e pagável. Alerta
+    // que afirma mais do que o dado sustenta manda a pessoa investigar a coisa errada.
+    `${d.total} exceção(ões) de ${ROTULO_TRAVA[d.tipo] ?? d.tipo} está(ão) aberta(s), a mais antiga há`,
+    `${d.minutos} minutos. O motor já esgotou os retries automáticos: o que sobrou precisa de uma pessoa.`,
     "",
-    `${d.total} exceção(ões) aberta(s) deste tipo, a mais antiga há ${d.minutos} minutos. O motor já`,
-    "esgotou os retries automáticos — o que sobrou precisa de uma pessoa.",
+    CONSEQUENCIA[d.tipo] ?? "Enquanto estiverem abertas, a parte do ciclo que elas representam não avança.",
     "",
-    "O que conferir primeiro: o detalhe da exceção traz o erro cru do Odoo ou do Asaas. Chave de API",
-    "sem permissão de lançar pagamento e base do Odoo expirada são as duas causas que mais aparecem,",
-    "e as duas produzem exatamente este sintoma. Corrigida a causa, o botão \"reprocessar\" reenfileira.",
+    "O que conferir primeiro: abra a exceção no console. O detalhe traz o erro cru do Odoo ou do",
+    "Asaas e o que o motor estava tentando fazer. Chave de API sem permissão e base do Odoo",
+    "expirada são as duas causas mais comuns. Corrigida a causa, o botão \"reprocessar\" reenfileira.",
   ].join("\n"),
   silencioMinutos: SILENCIO_PADRAO_MINUTOS,
   excecaoId: d.excecaoId ?? null,
 });
+
+const ROTULO_TRAVA: Partial<Record<ExceptionType, string>> = {
+  payment_unmatched: "pagamento não conciliado",
+  charge_create_failed: "cobrança não processada",
+  integration_error: "erro de integração",
+};
+
+/** O que está em jogo, sem afirmar qual dos casos do tipo aconteceu. */
+const CONSEQUENCIA: Partial<Record<ExceptionType, string>> = {
+  payment_unmatched: "Envolve o caminho do dinheiro: pode ser pagamento recebido que não virou baixa no Odoo,\ncobrança que o evento não achou, ou evento que não corresponde a pagamento nenhum. A exceção diz qual.",
+  charge_create_failed: "Envolve o boleto: pode ser cobrança que não foi criada (o cliente não recebeu nada) ou\ncancelamento que falhou (existe boleto vivo, ainda pagável, para uma fatura cancelada). A exceção diz qual.",
+  integration_error: "Um job falhou. Se ele voltou a rodar sozinho depois, a exceção continua aberta até alguém\nfechá-la — confira a data do último sucesso na tela de Saúde antes de agir.",
+};
 
 export const alertaChaveVencendo = (d: { ageDays: number; excecaoId?: number | null }): Alert => ({
   tipo: "api_key_expiring",

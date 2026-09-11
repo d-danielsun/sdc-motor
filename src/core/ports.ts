@@ -124,6 +124,9 @@ export interface Repo {
     countOpenByType(): Promise<Record<string, number>>;
     get(id: number): Promise<{ id: number; type: ExceptionType; status: "open" | "resolved" | "ignored"; refTable: string | null; refId: number | null; detail: unknown } | null>;
     setStatus(id: number, status: "open" | "resolved" | "ignored", by: string | null): Promise<void>;
+    /** Fecha as exceções ABERTAS de um `refTable`, marcando quem resolveu. Serve para condição que
+     *  o motor sabe que passou — um job que voltou a rodar com sucesso. Devolve quantas fechou. */
+    resolverPorRef(refTable: string, by: string): Promise<number>;
     /** A exceção ABERTA mais antiga entre `types` criada ANTES de `limite`, com o total do grupo.
      *  O corte vem do chamador (o clock do motor), nunca do `now()` do Postgres: o mundo de teste
      *  usa relógio fixo, e misturar os dois é o erro que já quebrou quatro testes deste repo. */

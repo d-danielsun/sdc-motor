@@ -121,6 +121,34 @@ describe("SPA do console", () => {
   // Os três achados do /qa-gate de 11/09/2026, reproduzidos no navegador com Playwright. Estes
   // testes são de TEXTO-FONTE — a suíte não renderiza — então valem como trava contra remoção
   // acidental, não como prova de que funciona. A prova está nas evidências do TEST-PLAN §4.
+  it("toda chamada a confirmar() RESPEITA a resposta (achado do Codex: a quinta que não reprovava)", () => {
+    // O teste anterior verificava que `await confirmar(` existia perto da ação. Isso não testa
+    // nada: apagar os dois `if (!ok) return;` — ou seja, Cancelar deixar de impedir a ação —
+    // mantinha os 14 testes verdes. O invariante não é "pergunta", é "obedece a resposta".
+    const chamadas = [...app.matchAll(/const (\w+) = await confirmar\(/g)];
+    expect(chamadas.length, "ninguém mais chama confirmar() guardando o resultado").toBeGreaterThanOrEqual(2);
+    for (const m of chamadas) {
+      const variavel = m[1];
+      const depois = app.slice(m.index ?? 0, (m.index ?? 0) + 700);
+      expect(depois, `a resposta de confirmar() em "${variavel}" não é obedecida: falta if (!${variavel}) return`)
+        .toMatch(new RegExp(`if \\(!${variavel}\\) return;`));
+    }
+    // a forma embutida das ações de exceção (`if (confirmacao && !(await confirmar(...))) return;`)
+    // já é a própria guarda — mas se alguém a soltar do `if`, cai no laço acima.
+    expect(app).toMatch(/if \(confirmacao && !\(await confirmar\([^)]*\)\)\) return;/);
+  });
+
+  it("a confirmação pendente morre quando o contexto sai da tela (achado do Codex)", () => {
+    // Escape era só UMA das saídas: voltar no navegador deixava o diálogo vivo sobre outra tela,
+    // e clicar nele disparava a ação. Reproduzido no Chromium antes da correção.
+    expect(app).toMatch(/let cancelarConfirmacao = null;/);
+    expect(app, "trocar de tela não cancela a confirmação aberta").toMatch(/hashchange[\s\S]{0,80}cancelarConfirmacao\?\.\(\)/);
+    expect(app, "sair não cancela a confirmação aberta").toMatch(/btn-sair[\s\S]{0,120}cancelarConfirmacao\?\.\(\)/);
+    const fn = app.slice(app.indexOf("function confirmar("));
+    expect(fn, "o cancelamento externo não é registrado").toMatch(/cancelarConfirmacao = \(\) => fim\(false\)/);
+    expect(fn, "a referência não é limpa no fim — cancelar duas vezes resolveria uma promessa morta").toMatch(/cancelarConfirmacao = null;/);
+  });
+
   it("a linha de lista é operável por teclado (qa-gate U3)", () => {
     // `div` com onclick não recebe Tab e não responde a Enter: quem opera a fila o dia inteiro
     // ficava obrigado a usar o mouse para CADA exceção.
@@ -128,7 +156,11 @@ describe("SPA do console", () => {
     const helper = app.slice(app.indexOf("const itemClicavel = "), app.indexOf("const itemClicavel = ") + 600);
     expect(helper).toMatch(/role: "button"/);
     expect(helper).toMatch(/tabindex: "0"/);
-    expect(helper, "Enter/Espaço não acionam a linha").toMatch(/onkeydown[\s\S]{0,120}Enter/);
+    expect(helper, "Enter/Espaço não acionam a linha").toMatch(/onkeydown[\s\S]{0,260}Enter/);
+    // Sem esta guarda, Enter no link "abrir boleto" DENTRO da linha abria o painel em vez do PDF:
+    // o keydown do filho borbulha, e o preventDefault daqui matava a ativação do link.
+    expect(helper, "o keydown da linha come o Enter dos controles dentro dela")
+      .toMatch(/ev\.target !== ev\.currentTarget/);
     // e as duas listas usam o helper, em vez de cada uma reinventar a linha
     expect([...app.matchAll(/itemClicavel\(/g)].length, "alguma lista voltou a montar a linha na mão").toBeGreaterThanOrEqual(2);   // exceções e cobranças
     expect(app).not.toMatch(/el\("div", \{ class: "item", onclick/);

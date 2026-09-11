@@ -14,7 +14,12 @@ export async function processAsaasEvents(deps: Deps, o: { limit?: number } = {})
   const out = { done: 0, ignored: 0, errors: 0 };
   for (const stored of await repo.asaasEvents.pending(o.limit ?? ASAAS_EVENT_BATCH, clock.now())) {
     const posse = { claimToken: stored.claimToken };
-    await repo.asaasEvents.touch(stored.id, clock.now(), stored.claimToken);
+    // `touch` já diz se a reserva é nossa: seguir sem checar era gastar chamada externa (e, no
+    // caminho do erro, abrir exceção) por um evento que já tem outro dono.
+    if (!(await repo.asaasEvents.touch(stored.id, clock.now(), stored.claimToken))) {
+      deps.log("reserva perdida antes de começar", { eventId: stored.id });
+      continue;
+    }
     try {
       const status = await applyEvent(deps, stored.payload, stored.id);
       const meu = await repo.asaasEvents.mark(stored.id, status, status === "error" ? { error: "processado com exceção — ver /api/v1/exceptions", ...posse } : posse);
@@ -26,7 +31,15 @@ export async function processAsaasEvents(deps: Deps, o: { limit?: number } = {})
       if (next) await repo.asaasEvents.mark(stored.id, "pending", { attempts, nextAttemptAt: next, error: (e as Error).message, ...posse });
       else {
         // Definitivo ou retries esgotados: fica em 'error' E vira exceção apontando pro evento — o "reprocessar" do console reenfileira.
-        await repo.asaasEvents.mark(stored.id, "error", { attempts, error: (e as Error).message, ...posse });
+        const meuAinda = await repo.asaasEvents.mark(stored.id, "error", { attempts, error: (e as Error).message, ...posse });
+        if (!meuAinda) {
+          // A reserva foi perdida enquanto este worker falhava: o novo dono JÁ concluiu o evento.
+          // Sem esta guarda, o worker velho abria uma exceção sobre trabalho que deu certo e ainda
+          // contava `errors`. Somado ao alerta de exceção travada, isso virava e-mail dizendo que
+          // um pagamento não foi baixado quando ele foi. Achado do review adversarial do Codex.
+          deps.log("reserva perdida no erro: não abri exceção sobre trabalho de outro worker", { eventId: stored.asaasEventId });
+          continue;
+        }
         await repo.exceptions.openOnce({ type: "payment_unmatched", refTable: "webhook_events", refId: stored.id, detail: { reason: isTransient(e) ? "retries esgotados" : "erro definitivo", event: stored.eventType, asaasPaymentId: stored.asaasPaymentId, error: (e as Error).message } });
         deps.log("evento asaas em erro", { eventId: stored.asaasEventId, error: (e as Error).message });
         out.errors++;

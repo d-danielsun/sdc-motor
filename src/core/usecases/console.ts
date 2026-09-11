@@ -52,7 +52,18 @@ export async function reprocessException(deps: Deps, id: number, by: string): Pr
       return { ok: true, action: "customer_synced", detail: { asaasCustomerId: c.asaasCustomerId, invoicesProcessed: processed, chargesCreated: created } };
     },
     charge_create_failed: async () => {
-      if (ex.refTable === "odoo_events" && ex.refId !== null) { await repo.odooEvents.reset(ex.refId); return { ok: true, action: "odoo_event_requeued" }; }
+      if (ex.refTable === "odoo_events" && ex.refId !== null) {
+        // `reset` levanta `FilaJaTemPendente` quando já existe outra notificação pendente da mesma
+        // fatura (o índice único da 0008). Traduzir o erro sem tratar a resposta deixava o botão
+        // "reprocessar" devolvendo 500 "internal error" para um estado perfeitamente explicável.
+        try {
+          await repo.odooEvents.reset(ex.refId);
+        } catch (e) {
+          if (e instanceof FilaJaTemPendente) return fail("invalid_state", "já existe uma notificação pendente desta fatura na fila — o worker vai processá-la; não precisa reenfileirar");
+          throw e;
+        }
+        return { ok: true, action: "odoo_event_requeued" };
+      }
       const moveId = typeof d.odooId === "number" ? d.odooId : null;
       const inv = moveId ? await odoo.getInvoice(moveId) : null;
       if (!inv) return fail("invalid_state", "não sei qual fatura reprocessar — a varredura (sync-invoices) tenta de novo sozinha");

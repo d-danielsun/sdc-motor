@@ -28,6 +28,22 @@ como se perde dado.
    `create index concurrently` num passo fora da migration — `concurrently` não roda dentro de
    transação, então isso muda o runner, e por ora a decisão registrada é a regra de operação.
 
+## Nunca edite uma migration aplicada — nem os comentários
+
+O runner compara o **sha256 do arquivo inteiro**, e comentário é byte como qualquer outro. Uma
+melhoria de comentário na `0008` já aplicada foi recusada com `MigrationDivergente` em todo banco
+que a tinha, e como o motor recusa subir com migration pendente, o deploy trava com o motor fora
+do ar. Achado do review adversarial do Codex em 11/09/2026, reproduzido num banco de rascunho.
+
+Se a nota é sobre a migration, ela vem para cá ou para o runbook — não para dentro do `.sql`.
+Duas notas que nasceram assim:
+
+- **0008, seção 2 (colapso + índice único):** ver a regra 3 acima. O `create unique index` sobre
+  `odoo_events` não é seguro com o webhook do Odoo ativo.
+- **0008, seção 3 (`content_sha256`):** o `alter table ... add column if not exists` de lá é
+  redundante com o bootstrap do runner, que faz o mesmo. Ficou no arquivo só para quem aplica as
+  migrations à mão com `psql` ver a coluna existir.
+
 ## Como usar
 
 ```bash
