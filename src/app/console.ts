@@ -13,10 +13,10 @@ import { getCookie, setCookie } from "hono/cookie";
 import type { AuthStore, ConsoleUser } from "../adapters/db/auth.js";
 import { FreioDeLogin, isEmail, normalizeEmail, SESSION_TTL_SECONDS, tokenBemFormado, verifyPassword } from "../core/auth.js";
 import type { ConsoleQueries } from "../core/console.js";
-import { CONSOLE_CONFIG_KEYS, type ActionResult, type ErrorCode } from "../core/console.js";
+import { CONSOLE_CONFIG_KEYS, EXC_TYPES, type ActionResult, type ErrorCode } from "../core/console.js";
 import type { Deps } from "../core/ports.js";
 import type { ChargeStatus, ExceptionType } from "../core/types.js";
-import { acceptWriteoff, enableCustomerNotifications, healthReport, isIsoDate, reprocessException, resolveException, setConsoleConfig } from "../core/usecases/console.js";
+import { acceptWriteoff, enableCustomerNotifications, healthReport, isIsoDate, reprocessException, requeueAllByType, resolveException, setConsoleConfig } from "../core/usecases/console.js";
 import { safeEqual } from "./server.js";
 
 import type { JobRunner } from "./scheduler.js";
@@ -71,7 +71,7 @@ export function exigeSecure(c: Context, cd: Pick<ConsoleDeps, "permitirCookieIns
 
 const STATUS_BY_CODE: Record<ErrorCode | "internal" | "unauthorized", number> = { not_found: 404, invalid_state: 409, invalid_input: 400, upstream: 502, config: 500, busy: 409, internal: 500, unauthorized: 401 };
 const EXC_STATUSES = ["open", "resolved", "ignored"] as const;
-const EXC_TYPES: ExceptionType[] = ["customer_missing_document", "charge_create_failed", "payment_unmatched", "amount_divergent", "reversal_pending", "queue_interrupted", "stale_heartbeat", "api_key_expiring", "writeoff_needed", "webhook_penalized", "integration_error"];
+
 const CHARGE_STATUSES: ChargeStatus[] = ["pending", "created", "confirmed", "received", "settled", "cancelled", "refunded", "exception"];
 
 class BadInput extends Error { constructor(msg: string) { super(msg); } }
@@ -264,10 +264,16 @@ export function createConsoleApi(cd: ConsoleDeps): Hono {
     for (const s of statuses ?? []) enumParam(s, "status", CHARGE_STATUSES);
     const q = c.req.query("q");
     if (q !== undefined && q.length > 100) throw new BadInput("q muito longo");
+    // Keyset: os dois parâmetros ou nenhum. Um só é erro de quem chama, não default silencioso —
+    // paginar por metade do cursor devolveria página errada sem avisar.
+    const afterDue = dateParam(c.req.query("after_due_date"), "after_due_date");
+    const afterId = intParam(c.req.query("after_id"), "after_id", { min: 1 });
+    if ((afterDue === undefined) !== (afterId === undefined)) throw new BadInput("after_due_date e after_id andam juntos");
     return c.json(await cd.queries.charges({
       status: statuses as ChargeStatus[] | undefined, dueFrom: dateParam(c.req.query("due_from"), "due_from"), dueTo: dateParam(c.req.query("due_to"), "due_to"),
       partnerId: intParam(c.req.query("partner"), "partner", { min: 1 }), q: q || undefined,
       limit: intParam(c.req.query("limit"), "limit", { min: 1, max: 200 }), offset: intParam(c.req.query("offset"), "offset", { min: 0 }),
+      after: afterDue !== undefined && afterId !== undefined ? { dueDate: afterDue, id: afterId } : undefined,
     }));
   });
   api.get("/charges/:id", async (c) => { const r = await cd.queries.charge(idParam(c.req.param("id"))); return r ? c.json(r) : c.json({ ok: false, code: "not_found", error: "not found" }, 404); });
@@ -281,6 +287,22 @@ export function createConsoleApi(cd: ConsoleDeps): Hono {
     return c.json(out);
   });
   api.put("/config/:key", async (c) => send(c, await setConsoleConfig(cd.deps, c.req.param("key"), (await jsonObject(c)).value)));
-  api.post("/customers/enable-notifications", async (c) => send(c, await enableCustomerNotifications(cd.deps)));
+  // 202 e não 200: o trabalho continua depois da resposta. Ligar a régua para uma base grande é
+  // uma chamada ao Asaas por cliente, e isso não cabe num request sem morrer no timeout do proxy.
+  // O progresso vive em app_config.NOTIFICATIONS_PROGRESS e aparece no health-report; retomar é
+  // chamar de novo, porque quem já está ligado não é rechamado.
+  api.post("/customers/enable-notifications", async (c) => {
+    // Mesmo filtro que o job usa: contar sem filtrar prometia um total maior que o do progresso.
+    const total = (await cd.deps.repo.customers.listSynced()).filter((c) => c.asaasCustomerId).length;
+    void enableCustomerNotifications(cd.deps).catch((e) => cd.deps.log("enable-notifications falhou", { error: (e as Error).message }));
+    return c.json({ ok: true, action: "notifications_enabling", detail: { total } }, 202);
+  });
+  // Reenfileira em lote os eventos em `error` das exceções abertas de um tipo. A exceção NÃO é
+  // resolvida aqui: quem resolve é o worker ao processar com sucesso, ou uma pessoa.
+  api.post("/exceptions/requeue-all", async (c) => {
+    const tipo = c.req.query("type");
+    if (!tipo) throw new BadInput("type é obrigatório — reenfileirar tudo de uma vez não é uma operação que alguém queira sem escolher");
+    return send(c, await requeueAllByType(cd.deps, tipo));
+  });
   return api;
 }

@@ -78,6 +78,9 @@ export interface AsaasPayment {
   paymentDate: string | null;
   clientPaymentDate: string | null;
   creditDate: string | null;
+  /** Previsão de crédito. É por ela que o reconcile faz o segundo passe (`estimatedCreditDate[ge]`),
+   *  porque boleto pago numa quinta e creditado na terça sai da janela de `paymentDate`. */
+  estimatedCreditDate: string | null;
   externalReference: string | null;
   bankSlipUrl: string | null;
   invoiceUrl: string | null;
@@ -131,6 +134,8 @@ export interface CustomerMap {
 }
 export interface StoredAsaasEvent {
   id: number;
+  /** Token desta reserva. `mark`/`touch` só valem com ele — ver `claimSql` em adapters/db/repo.ts. */
+  claimToken: string;
   asaasEventId: string;
   eventType: string;
   asaasPaymentId: string | null;
@@ -139,6 +144,8 @@ export interface StoredAsaasEvent {
 }
 export interface StoredOdooEvent {
   id: number;
+  /** Token desta reserva. `mark`/`touch` só valem com ele. */
+  claimToken: string;
   odooModel: string;
   odooId: number;
   odooAction: string | null;

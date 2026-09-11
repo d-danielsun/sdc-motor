@@ -5,7 +5,7 @@ import type { AsaasPayment } from "../../src/core/types.js";
 
 const base: AsaasPayment = {
   id: "pay_1", customer: "cus_1", status: "RECEIVED", billingType: "BOLETO", value: "100.00", netValue: "98.01", originalValue: null, interestValue: null,
-  dueDate: "2026-09-10", paymentDate: "2026-09-10", clientPaymentDate: "2026-09-10", creditDate: "2026-09-10", externalReference: "odoo:move_line:1",
+  dueDate: "2026-09-10", paymentDate: "2026-09-10", clientPaymentDate: "2026-09-10", creditDate: "2026-09-10", estimatedCreditDate: "2026-09-10", externalReference: "odoo:move_line:1",
   bankSlipUrl: null, invoiceUrl: null, invoiceNumber: null, nossoNumero: null, deleted: false,
 };
 const opts = { toleranceCents: 1, jurosMultaAuto: false };

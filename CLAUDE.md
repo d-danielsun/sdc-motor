@@ -26,6 +26,9 @@ Motor de cobrança Odoo ↔ Asaas da SDC (deal Salvei, R$ 8k/mês). Fatura posta
 
 ## NÃO faça
 - Não importe `pg`, `hono`, `fetch` ou env dentro de `src/core` — há teste que quebra.
+- Não edite migration já aplicada (o runner compara sha256 e recusa) nem crie uma que ordene antes da última aplicada. Desfazer = migration nova; `db/migrations/down/` é só para rollback de deploy.
+- Não troque o role do `DATABASE_URL` por um sem ser dono/BYPASSRLS: RLS sem policy devolve VAZIO, não erro, e vazio faz o motor emitir boleto duplicado. O tripwire do boot recusa subir nesse caso.
+- Não marque evento (`mark`/`touch`) sem o `claimToken` da reserva: `false` significa que a reserva foi perdida, e sobrescrever é apagar o trabalho de quem assumiu.
 - Não use o parcelamento nativo do Asaas (o `externalReference` propaga igual pra todas as parcelas — spike S0.2).
 - Não dê baixa em `PAYMENT_CONFIRMED`; só em `PAYMENT_RECEIVED`.
 - Não responda nada além de 200 rápido nos webhooks: Asaas interrompe a fila após 15 falhas; o Odoo desiste em 1 s e não reenvia.

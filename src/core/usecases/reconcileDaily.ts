@@ -5,7 +5,12 @@ import type { Deps } from "../ports.js";
 import { RECEIVED_STATUSES, receivePayment } from "../receive.js";
 import { moveLineIdFromRef } from "../types.js";
 
-export interface ReconcileSummary { at: string; ok: boolean; from: string; scanned: number; received: number; already: number; unmatched: number; divergent: number; needsReview: number; errors: number; overdueChecked: number }
+export interface ReconcileSummary {
+  at: string; ok: boolean; from: string; scanned: number; received: number; already: number;
+  unmatched: number; divergent: number; needsReview: number; errors: number; overdueChecked: number;
+  /** Quantos vieram só pelo passe de data de CRÉDITO — o que a janela de pagamento perdia. */
+  byCreditDate: number;
+}
 
 export function daysAgo(today: string, days: number): string {
   const d = new Date(`${today}T12:00:00Z`);
@@ -19,21 +24,35 @@ export async function reconcileDaily(deps: Deps, o: { lookbackDays?: number } = 
   const last = await deps.repo.config.get<{ ok?: boolean; at?: string; from?: string }>("RECONCILE_LAST");
   const anchor = last?.ok && last.at && last.at.slice(0, 10) < today ? last.at.slice(0, 10) : today;   // motor parado > janela: a janela cresce até o último sucesso
   const from = daysAgo(anchor, lookback);
-  const s: ReconcileSummary = { at: deps.clock.now().toISOString(), ok: false, from, scanned: 0, received: 0, already: 0, unmatched: 0, divergent: 0, needsReview: 0, errors: 0, overdueChecked: 0 };
-  for (const status of RECEIVED_STATUSES) {
-    for await (const p of deps.asaas.listPayments({ status, paymentDateFrom: from })) {
-      s.scanned++;
-      if (moveLineIdFromRef(p.externalReference) === null) continue;   // cobrança que não é nossa
-      try {
-        const r = await receivePayment(deps, p, "reconcile");
-        if (r === "received") s.received++;
-        else if (r === "already") s.already++;
-        else if (r === "unmatched") s.unmatched++;
-        else if (r === "wizard_failed" || r === "needs_review" || r === "busy") s.needsReview++;
-        else s.divergent++;
-      } catch (e) {
-        s.errors++;
-        deps.log("reconcile: pagamento com erro", { asaasPaymentId: p.id, error: (e as Error).message });
+  const s: ReconcileSummary = { at: deps.clock.now().toISOString(), ok: false, from, scanned: 0, received: 0, already: 0, unmatched: 0, divergent: 0, needsReview: 0, errors: 0, overdueChecked: 0, byCreditDate: 0 };
+  const contabiliza = (r: string) => {
+    if (r === "received") s.received++;
+    else if (r === "already") s.already++;
+    else if (r === "unmatched") s.unmatched++;
+    else if (r === "wizard_failed" || r === "needs_review" || r === "busy") s.needsReview++;
+    else s.divergent++;
+  };
+  const vistos = new Set<string>();   // o mesmo pagamento pode cair nos dois passes
+
+  // DOIS passes com a mesma janela, por motivos diferentes. `paymentDate` é quando o cliente
+  // pagou; `estimatedCreditDate` é quando o dinheiro cai. Boleto pago numa quinta e creditado na
+  // terça vira RECEIVED já FORA da janela de pagamento — e é justo aí que a rede de segurança
+  // precisava pegá-lo. Sem o segundo passe, esse pagamento só apareceria pelo passe de vencidas.
+  for (const chave of ["paymentDateFrom", "creditDateFrom"] as const) {
+    for (const status of RECEIVED_STATUSES) {
+      for await (const p of deps.asaas.listPayments({ status, [chave]: from })) {
+        if (vistos.has(p.id)) continue;
+        vistos.add(p.id);
+        s.scanned++;
+        if (moveLineIdFromRef(p.externalReference) === null) continue;   // cobrança que não é nossa
+        try {
+          const r = await receivePayment(deps, p, "reconcile");
+          contabiliza(r);
+          if (chave === "creditDateFrom" && r !== "not_received") s.byCreditDate++;   // qualquer resgate conta: `already` também é informação
+        } catch (e) {
+          s.errors++;
+          deps.log("reconcile: pagamento com erro", { asaasPaymentId: p.id, error: (e as Error).message, passe: chave });
+        }
       }
     }
   }
@@ -43,8 +62,7 @@ export async function reconcileDaily(deps: Deps, o: { lookbackDays?: number } = 
     try {
       const p = c.asaasPaymentId ? await deps.asaas.getPayment(c.asaasPaymentId) : null;
       if (p && !p.deleted && (RECEIVED_STATUSES as readonly string[]).includes(p.status)) {
-        const r = await receivePayment(deps, p, "reconcile");
-        if (r === "received") s.received++; else if (r === "already") s.already++; else if (r === "wizard_failed" || r === "needs_review" || r === "busy") s.needsReview++; else s.divergent++;
+        contabiliza(await receivePayment(deps, p, "reconcile"));
       }
     } catch (e) { s.errors++; deps.log("reconcile: cobrança vencida com erro", { chargeId: c.id, error: (e as Error).message }); }
   }

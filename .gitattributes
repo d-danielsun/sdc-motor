@@ -1,0 +1,5 @@
+# O runner de migration compara o sha256 do CONTEÚDO de cada arquivo aplicado. Num checkout
+# Windows com autocrlf, todo .sql voltaria com CRLF e o hash mudaria — o motor recusaria subir
+# acusando "migration EDITADA depois de aplicada", em todos os arquivos de uma vez.
+*.sql text eol=lf
+*.sh  text eol=lf

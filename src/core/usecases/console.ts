@@ -1,13 +1,15 @@
 // Ações do console: tudo que uma pessoa do financeiro faz numa exceção. Cada uma reentra no fluxo normal.
-import { CONSOLE_CONFIG_KEYS, fail, type ActionResult, type ConsoleConfigKey, type HealthReport, type JobSummary, type ConsoleQueries } from "../console.js";
+import { CONSOLE_CONFIG_KEYS, EXC_TYPES, fail, type ActionResult, type ConsoleConfigKey, type HealthReport, type NotificationsProgress, type ConsoleQueries } from "../console.js";
 import { ensureCustomer } from "../customers.js";
 import { TOLERANCE_MAX_BRL } from "../limits.js";
 import { toCents } from "../money.js";
-import type { Deps } from "../ports.js";
+import { FilaJaTemPendente, type Deps } from "../ports.js";
 import { RECEIVED_STATUSES, receivePayment } from "../receive.js";
-import type { ExceptionType } from "../types.js";
+import { externalRefForPartner, type ExceptionType } from "../types.js";
 import { handleInvoice } from "./handleInvoice.js";
-import { apiKeyAgeDays } from "./watchdog.js";
+import type { ReconcileSummary } from "./reconcileDaily.js";
+import type { SyncSummary } from "./syncInvoices.js";
+import { apiKeyAgeDays, type WatchdogSummary } from "./watchdog.js";
 
 type OpenException = NonNullable<Awaited<ReturnType<Deps["repo"]["exceptions"]["get"]>>>;
 async function openException(deps: Deps, id: number): Promise<{ ok: true; ex: OpenException } | { ok: false; error: ActionResult }> {
@@ -95,14 +97,80 @@ export async function acceptWriteoff(deps: Deps, id: number, by: string): Promis
 }
 
 /** Gate R3: liga a régua para os clientes existentes E como política para os próximos. */
-export async function enableCustomerNotifications(deps: Deps): Promise<ActionResult> {
-  await deps.repo.config.set("NOTIFICATIONS_ENABLED", true);
-  let updated = 0, failed = 0;
-  for (const c of await deps.repo.customers.listSynced()) {
-    try { await deps.asaas.updateCustomer(c.asaasCustomerId!, { notificationDisabled: false }); updated++; }
-    catch (e) { failed++; deps.log("falha ao ligar notificações", { partner: c.odooPartnerId, error: (e as Error).message }); }
+/**
+ * Liga a régua do Asaas para os clientes já sincronizados.
+ *
+ * Isto era uma requisição HTTP que ia até o fim: uma chamada ao Asaas por cliente, em série,
+ * dentro do request. Com base grande, o request morre no timeout do proxy no meio do caminho, e
+ * ninguém sabe quantos clientes já foram — reexecutar chamava tudo de novo.
+ *
+ * Agora é um trabalho em segundo plano, retomável por construção: só chama o Asaas para quem
+ * ainda está com `notificationDisabled = true`, e grava progresso em `NOTIFICATIONS_PROGRESS`
+ * a cada cliente. Retomar é simplesmente rodar de novo.
+ */
+export async function enableCustomerNotifications(deps: Deps): Promise<NotificationsProgress> {
+  const { repo, asaas, clock, log } = deps;
+  await repo.config.set("NOTIFICATIONS_ENABLED", true);   // política para os PRÓXIMOS clientes
+  const pendentes = (await repo.customers.listSynced()).filter((c) => c.asaasCustomerId);
+  const p: NotificationsProgress = { total: pendentes.length, updated: 0, failed: 0, at: clock.now().toISOString(), ok: false };
+  await repo.config.set("NOTIFICATIONS_PROGRESS", p);
+
+  for (const c of pendentes) {
+    try {
+      // Quem já está com notificação ligada não é rechamado: é o que faz retomar ser barato.
+      const atual = await asaas.findCustomerByExternalRef(externalRefForPartner(c.odooPartnerId));
+      if (atual && atual.notificationDisabled === false) { p.updated++; continue; }
+      await asaas.updateCustomer(c.asaasCustomerId!, { notificationDisabled: false });
+      p.updated++;
+    } catch (e) {
+      p.failed++;
+      log("falha ao ligar notificações", { partner: c.odooPartnerId, error: (e as Error).message });
+    }
+    p.at = clock.now().toISOString();
+    await repo.config.set("NOTIFICATIONS_PROGRESS", p).catch(() => undefined);   // progresso não derruba o trabalho
   }
-  return failed === 0 ? { ok: true, action: "notifications_enabled", detail: { updated, failed } } : fail("upstream", `notificações ligadas para ${updated}, falharam ${failed} — rode de novo`);
+  p.ok = p.failed === 0;
+  p.at = clock.now().toISOString();
+  await repo.config.set("NOTIFICATIONS_PROGRESS", p);
+  log("enable-notifications", { ...p });
+  return p;
+}
+
+/**
+ * Reenfileira, em lote, os eventos em `error` das exceções ABERTAS de um tipo.
+ *
+ * O caso real: o Odoo ficou fora por duas horas, cinquenta eventos esgotaram os retries e viraram
+ * `error`, cada um com sua exceção. Resolver isso um clique por vez é o tipo de trabalho que
+ * ninguém faz — e evento em `error` não volta sozinho.
+ *
+ * A exceção NÃO é resolvida aqui. Quem resolve é o worker ao processar com sucesso, ou uma pessoa
+ * que olhou. Marcar como resolvida antes de o trabalho acontecer é mentir para a próxima pessoa.
+ */
+export async function requeueAllByType(deps: Deps, tipo: string): Promise<ActionResult> {
+  const { repo } = deps;
+  if (!(EXC_TYPES as readonly string[]).includes(tipo)) return fail("invalid_input", `tipo de exceção inválido: ${tipo}`);
+  let requeued = 0, skipped = 0;
+  for (const ex of await repo.exceptions.listOpenWithEvent(tipo as ExceptionType)) {
+    const fila = ex.refTable === "webhook_events" ? repo.asaasEvents : repo.odooEvents;
+    try {
+      // Só o que está em `error`: evento em `pending` ou `processing` já está sendo cuidado, e
+      // mexer nele reenfileiraria trabalho em voo.
+      const voltou = await fila.requeueFromError(ex.refId);
+      if (voltou) requeued++; else skipped++;
+    } catch (e) {
+      // Só a colisão do índice parcial vira `ignored`, e na fila CERTA — a versão anterior
+      // escrevia sempre em `odoo_events`, e como as duas tabelas têm sequência própria começando
+      // em 1, isso marcava como ignorada uma notificação sem relação nenhuma, cujo boleto então
+      // nunca era emitido. Achado do verificador da #15.
+      skipped++;
+      if (e instanceof FilaJaTemPendente) {
+        await fila.mark(ex.refId, "ignored", { error: `não reenfileirado: ${e.message}` }).catch(() => undefined);
+      } else {
+        deps.log("requeue-all: evento não reenfileirado", { excecaoId: ex.id, fila: ex.refTable, eventoId: ex.refId, error: (e as Error).message });
+      }
+    }
+  }
+  return { ok: true, action: "requeued", detail: { requeued, skipped } };
 }
 
 const validators: Record<ConsoleConfigKey, (v: unknown) => boolean> = {
@@ -136,7 +204,12 @@ export async function healthReport(deps: Deps, queries: ConsoleQueries): Promise
     notificationsEnabled: (await repo.config.get<boolean>("NOTIFICATIONS_ENABLED")) === true,
     openCharges: await repo.charges.countOpen(), openExceptionsByType: await repo.exceptions.countOpenByType(),
     lastAsaasEventAt: (await repo.asaasEvents.lastReceivedAt())?.toISOString() ?? null, lastOdooEventAt: await queries.lastOdooEventAt(),
-    lastSync: await repo.config.get<JobSummary>("SYNC_LAST"), lastReconcile: await repo.config.get<JobSummary>("RECONCILE_LAST"), lastWatchdog: await repo.config.get<JobSummary>("WATCHDOG_LAST"),
+    // Tipado por job: quem grava é o próprio caso de uso, então o tipo é o dele. `app_config` é
+    // jsonb, então o cast é inevitável — mas fica num lugar só, e não espalhado pela UI.
+    lastSync: await repo.config.get<SyncSummary>("SYNC_LAST"),
+    lastReconcile: await repo.config.get<ReconcileSummary>("RECONCILE_LAST"),
+    lastWatchdog: await repo.config.get<WatchdogSummary>("WATCHDOG_LAST"),
+    notificationsProgress: await repo.config.get<NotificationsProgress>("NOTIFICATIONS_PROGRESS"),
     webhook: { id: whId, interrupted: wh?.interrupted ?? null, penalizedRequestsCount: wh?.penalizedRequestsCount ?? null },
     odooApiKeyAgeDays: keyCreated ? apiKeyAgeDays(keyCreated, clock.now()) : null,
   };

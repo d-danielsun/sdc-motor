@@ -1,7 +1,7 @@
 // Repositório Postgres (pg). SQL explícito; sem ORM — o mesmo arquivo vale pra Supabase e pra qualquer Postgres.
 import type pg from "pg";
 import { OPEN_STATUSES } from "../../core/charges.js";
-import type { Repo } from "../../core/ports.js";
+import { FilaJaTemPendente, type Repo } from "../../core/ports.js";
 import type { Charge, ChargeStatus, CustomerMap, ExceptionType, ProcessStatus, StoredAsaasEvent, StoredOdooEvent } from "../../core/types.js";
 
 type Row = Record<string, unknown>;
@@ -19,20 +19,33 @@ const customerRow = (r: Row): CustomerMap => ({
   id: Number(r.id), odooPartnerId: Number(r.odoo_partner_id), asaasCustomerId: (r.asaas_customer_id as string) ?? null, cpfCnpj: (r.cpf_cnpj as string) ?? null,
   name: String(r.name), email: (r.email as string) ?? null, phone: (r.phone as string) ?? null, syncStatus: r.sync_status as CustomerMap["syncStatus"], lastError: (r.last_error as string) ?? null,
 });
-const asaasEventRow = (r: Row): StoredAsaasEvent => ({ id: Number(r.id), asaasEventId: String(r.asaas_event_id), eventType: String(r.event_type), asaasPaymentId: (r.asaas_payment_id as string) ?? null, payload: r.payload, attempts: Number(r.attempts) });
-const odooEventRow = (r: Row): StoredOdooEvent => ({ id: Number(r.id), odooModel: String(r.odoo_model), odooId: Number(r.odoo_id), odooAction: (r.odoo_action as string) ?? null, attempts: Number(r.attempts) });
+const asaasEventRow = (r: Row): StoredAsaasEvent => ({ id: Number(r.id), claimToken: String(r.claim_token ?? ""), asaasEventId: String(r.asaas_event_id), eventType: String(r.event_type), asaasPaymentId: (r.asaas_payment_id as string) ?? null, payload: r.payload, attempts: Number(r.attempts) });
+const odooEventRow = (r: Row): StoredOdooEvent => ({ id: Number(r.id), claimToken: String(r.claim_token ?? ""), odooModel: String(r.odoo_model), odooId: Number(r.odoo_id), odooAction: (r.odoo_action as string) ?? null, attempts: Number(r.attempts) });
 
-// Reserva (claim) com FOR UPDATE SKIP LOCKED: dois workers nunca pegam o mesmo evento; reserva abandonada expira.
+// Reserva (claim) com FOR UPDATE SKIP LOCKED: dois workers nunca pegam o mesmo evento; reserva
+// abandonada expira depois do TTL.
+//
+// O `claim_token` (0008) fecha o furo que sobrava: um worker que voltou DEPOIS do TTL — pausa de
+// GC, rede lenta, container congelado — ainda tinha o id e sobrescrevia o resultado do novo dono.
+// Agora `mark` e `touch` exigem o token da reserva; afetar 0 linhas é o sinal de que a reserva foi
+// perdida, e o worker antigo registra e segue sem escrever nada.
+//
+// `is not distinct from` e não `($n is null or ...)`: sem token, a marcação casa APENAS com evento
+// que ninguém reservou. Era um furo com cara de conveniência — quem não passasse token sobrescrevia
+// qualquer coisa, inclusive uma reserva viva (achado do verificador da #15). O caso legítimo sem
+// token existe: `server.ts` marca um evento que ele mesmo acabou de inserir e que, se algum worker
+// já tiver reservado, não deve ser tocado.
 const claimSql = (table: string, cols: string) => `with c as (
     select id from ${table}
     where (process_status='pending' and (next_attempt_at is null or next_attempt_at <= $2))
        or (process_status='processing' and locked_at < $2::timestamptz - interval '${CLAIM_TTL_MINUTES} minutes')
     order by received_at, id limit $1 for update skip locked)
-  update ${table} e set process_status='processing', locked_at=$2 from c where e.id=c.id returning ${cols}`;
+  update ${table} e set process_status='processing', locked_at=$2, claim_token=gen_random_uuid() from c where e.id=c.id returning ${cols}, e.claim_token`;
 const markSql = (table: string) => `update ${table} set process_status=$2, processed_at=case when $2 in ('done','error','ignored') then now() else processed_at end,
-  error=coalesce($3, error), attempts=coalesce($4, attempts), next_attempt_at=$5, locked_at=null where id=$1`;
-const touchSql = (table: string) => `update ${table} set locked_at=$2 where id=$1`;
-const resetSql = (table: string) => `update ${table} set process_status='pending', attempts=0, next_attempt_at=null, error=null, processed_at=null, locked_at=null where id=$1`;
+  error=coalesce($3, error), attempts=coalesce($4, attempts), next_attempt_at=$5, locked_at=null, claim_token=null
+  where id=$1 and claim_token is not distinct from $6::uuid`;
+const touchSql = (table: string) => `update ${table} set locked_at=$2 where id=$1 and claim_token is not distinct from $3::uuid`;
+const resetSql = (table: string) => `update ${table} set process_status='pending', attempts=0, next_attempt_at=null, error=null, processed_at=null, locked_at=null, claim_token=null where id=$1`;
 const purgeSql = (table: string) => `delete from ${table} where process_status in ('done','ignored') and processed_at < now() - ($1 || ' days')::interval`;
 
 const isUniqueViolation = (e: unknown, constraint?: string) => (e as { code?: string; constraint?: string }).code === "23505" && (!constraint || (e as { constraint?: string }).constraint === constraint);
@@ -127,27 +140,54 @@ export function createPgRepo(pool: pg.Pool, lockPool: pg.Pool = pool): Repo {
       async pending(limit, now) {
         return (await all(claimSql("webhook_events", "e.id, e.asaas_event_id, e.event_type, e.asaas_payment_id, e.payload, e.attempts"), [limit, now])).sort((a, b) => Number(a.id) - Number(b.id)).map(asaasEventRow);
       },
-      async mark(id, status: ProcessStatus, o = {}) { await db.query(markSql("webhook_events"), [id, status, o.error ?? null, o.attempts ?? null, o.nextAttemptAt ?? null]); },
-      async touch(id, now) { await db.query(touchSql("webhook_events"), [id, now]); },
+      async mark(id, status: ProcessStatus, o = {}) { return ((await db.query(markSql("webhook_events"), [id, status, o.error ?? null, o.attempts ?? null, o.nextAttemptAt ?? null, o.claimToken ?? null])).rowCount ?? 0) > 0; },
+      async touch(id, now, claimToken) { return ((await db.query(touchSql("webhook_events"), [id, now, claimToken ?? null])).rowCount ?? 0) > 0; },
       async lastReceivedAt() { const r = await one<{ t: Date | null }>("select max(received_at) as t from webhook_events"); return r?.t ?? null; },
       async findByPayment(asaasPaymentId, eventType) {
-        const r = await one("select id, asaas_event_id, event_type, asaas_payment_id, payload, attempts from webhook_events where asaas_payment_id=$1 and event_type=$2 order by received_at desc limit 1", [asaasPaymentId, eventType]);
+        const r = await one("select id, claim_token, asaas_event_id, event_type, asaas_payment_id, payload, attempts from webhook_events where asaas_payment_id=$1 and event_type=$2 order by received_at desc limit 1", [asaasPaymentId, eventType]);
         return r ? asaasEventRow(r) : null;
       },
       async reset(id) { await db.query(resetSql("webhook_events"), [id]); },
+      async requeueFromError(id) { return ((await db.query(`${resetSql("webhook_events")} and process_status='error'`, [id])).rowCount ?? 0) > 0; },
       async purgeProcessedOlderThan(days) { const r = await db.query(purgeSql("webhook_events"), [String(days)]); return r.rowCount ?? 0; },
     },
     odooEvents: {
       async insert(e) {
-        const r = await one<{ id: number }>("insert into odoo_events (odoo_model, odoo_id, odoo_action, payload, process_status) values ($1,$2,$3,$4::jsonb,$5) returning id", [e.odooModel, e.odooId, e.odooAction, JSON.stringify(e.payload), e.status ?? "pending"]);
-        return Number(r!.id);
+        // `on conflict do nothing` sobre o índice parcial unique da 0008: notificação repetida do
+        // Odoo para a mesma fatura, ainda pendente, é colapsada. null = já havia uma na fila.
+        const r = await one<{ id: number }>(`insert into odoo_events (odoo_model, odoo_id, odoo_action, payload, process_status)
+          values ($1,$2,$3,$4::jsonb,$5)
+          on conflict (odoo_model, odoo_id) where process_status = 'pending' do nothing
+          returning id`,
+          [e.odooModel, e.odooId, e.odooAction, JSON.stringify(e.payload), e.status ?? "pending"]);
+        return r ? Number(r.id) : null;
       },
       async pending(limit, now) {
         return (await all(claimSql("odoo_events", "e.id, e.odoo_model, e.odoo_id, e.odoo_action, e.attempts"), [limit, now])).sort((a, b) => Number(a.id) - Number(b.id)).map(odooEventRow);
       },
-      async mark(id, status: ProcessStatus, o = {}) { await db.query(markSql("odoo_events"), [id, status, o.error ?? null, o.attempts ?? null, o.nextAttemptAt ?? null]); },
-      async touch(id, now) { await db.query(touchSql("odoo_events"), [id, now]); },
+      async mark(id, status: ProcessStatus, o = {}) {
+        // Devolver um evento para `pending` pode colidir com o índice parcial da 0008: já existe
+        // outra notificação pendente para a mesma fatura. Sem esta tradução, o 23505 subia CRU de
+        // dentro do catch do worker, matava o tick, e como o job `worker` roda o Odoo antes do
+        // Asaas, a volta do dinheiro parava junto — a cada minuto, para sempre. Achado do
+        // verificador da #15, reproduzido antes de corrigir.
+        try {
+          return ((await db.query(markSql("odoo_events"), [id, status, o.error ?? null, o.attempts ?? null, o.nextAttemptAt ?? null, o.claimToken ?? null])).rowCount ?? 0) > 0;
+        } catch (e) {
+          if (isUniqueViolation(e, "odoo_events_pendente_uniq")) throw new FilaJaTemPendente(`já existe notificação pendente para a mesma fatura (evento ${id})`);
+          throw e;
+        }
+      },
+      async touch(id, now, claimToken) { return ((await db.query(touchSql("odoo_events"), [id, now, claimToken ?? null])).rowCount ?? 0) > 0; },
       async reset(id) { await db.query(resetSql("odoo_events"), [id]); },
+      async requeueFromError(id) {
+        try {
+          return ((await db.query(`${resetSql("odoo_events")} and process_status='error'`, [id])).rowCount ?? 0) > 0;
+        } catch (e) {
+          if (isUniqueViolation(e, "odoo_events_pendente_uniq")) throw new FilaJaTemPendente(`já existe notificação pendente para a mesma fatura (evento ${id})`);
+          throw e;
+        }
+      },
       async purgeProcessedOlderThan(days) { const r = await db.query(purgeSql("odoo_events"), [String(days)]); return r.rowCount ?? 0; },
     },
     reconciliations: {
@@ -186,6 +226,13 @@ export function createPgRepo(pool: pg.Pool, lockPool: pg.Pool = pool): Repo {
       async get(id) {
         const r = await one("select id, type, status, ref_table, ref_id, detail from exceptions where id=$1", [id]);
         return r ? { id: Number(r.id), type: r.type as ExceptionType, status: r.status as "open" | "resolved" | "ignored", refTable: (r.ref_table as string) ?? null, refId: r.ref_id === null ? null : Number(r.ref_id), detail: r.detail } : null;
+      },
+      async listOpenWithEvent(type) {
+        return (await all<{ id: string; ref_table: string; ref_id: string }>(
+          `select id, ref_table, ref_id from exceptions
+            where status='open' and type=$1 and ref_id is not null and ref_table in ('webhook_events','odoo_events')
+            order by id`, [type],
+        )).map((r) => ({ id: Number(r.id), refTable: r.ref_table as "webhook_events" | "odoo_events", refId: Number(r.ref_id) }));
       },
       async setStatus(id, status, by) { await db.query("update exceptions set status=$2, resolved_by=$3, resolved_at=case when $2='open' then null else now() end where id=$1", [id, status, by]); },
     },

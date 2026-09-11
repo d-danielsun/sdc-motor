@@ -190,7 +190,7 @@ describe("console API", () => {
     }
     expect((await w.pool.query("select count(*)::int as n from charges")).rows[0].n).toBe(0);
   });
-  it("health-report não quebra com o Asaas fora; enable-notifications com falha parcial → 502", async () => {
+  it("health-report não quebra com o Asaas fora; enable-notifications registra a falha no progresso", async () => {
     const w = await setup();
     await w.deps.repo.config.set("ASAAS_WEBHOOK_ID", "wh_sumiu");
     await w.deps.repo.config.set("ODOO_API_KEY_CREATED_AT", "2026-06-20T00:00:00.000Z");
@@ -199,9 +199,15 @@ describe("console API", () => {
     const h = await w.api("/health-report");
     expect(h.status).toBe(200);
     expect(h.body).toMatchObject({ webhook: { id: "wh_sumiu", interrupted: null, penalizedRequestsCount: null }, odooApiKeyAgeDays: 82, openCharges: 2 });
+    // Desde a #15 isto é um job: responde 202 na hora e a falha aparece no progresso, não no
+    // status HTTP — com base grande, esperar o fim dentro do request morria no timeout do proxy.
     w.asaas.updateCustomer = async () => { throw new Error("asaas 500"); };
     const r = await w.api("/customers/enable-notifications", { method: "POST" });
-    expect(r.status).toBe(502); expect(r.body.error).toMatch(/falharam 1/);
+    expect(r.status).toBe(202);
+    expect(r.body).toMatchObject({ ok: true, action: "notifications_enabling" });
+    const { enableCustomerNotifications } = await import("../../src/core/usecases/console.js");
+    expect(await enableCustomerNotifications(w.deps)).toMatchObject({ failed: 1, ok: false });
+    expect((await w.api("/health-report")).body.notificationsProgress).toMatchObject({ failed: 1, ok: false });
     expect(await w.deps.repo.config.get("NOTIFICATIONS_ENABLED")).toBe(true);   // a política fica ligada; o retry é da ação
   });
   it("config: gates R1 (IDA_ENABLED) e R3 (notificações como política); validação por chave; health-report", async () => {
@@ -217,7 +223,11 @@ describe("console API", () => {
     expect((await w.api("/config/IDA_ENABLED", { method: "PUT", body: JSON.stringify({ value: true }) })).status).toBe(200);
     expect((await w.api("/config/GO_LIVE_CUTOFF_DATE", { method: "PUT", body: JSON.stringify({ value: null }) })).status).toBe(409);
     expect([...w.asaas.customers.values()][0]!.notificationDisabled).toBe(true);
-    expect((await w.api("/customers/enable-notifications", { method: "POST" })).body).toMatchObject({ ok: true, action: "notifications_enabled", detail: { updated: 1, failed: 0 } });
+    const disparo = await w.api("/customers/enable-notifications", { method: "POST" });
+    expect(disparo.status).toBe(202);
+    expect(disparo.body).toMatchObject({ ok: true, action: "notifications_enabling", detail: { total: 1 } });
+    const { enableCustomerNotifications: ligar } = await import("../../src/core/usecases/console.js");
+    expect(await ligar(w.deps)).toMatchObject({ total: 1, updated: 1, failed: 0, ok: true });
     expect([...w.asaas.customers.values()][0]!.notificationDisabled).toBe(false);
     // política: cliente novo depois do gate já nasce com notificações ligadas
     w.odoo.addPartner({ id: 11, name: "Novo", vat: "529.982.247-25" }); w.odoo.addInvoice({ id: 101, name: "INV/2", partnerId: 11, lines: [{ id: 1101, dateMaturity: "2026-10-01", amount: "5.00" }] });   // CPF distinto: mesmo CNPJ seria adotado como o cliente 10

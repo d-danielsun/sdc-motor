@@ -82,7 +82,10 @@ export function createServer(d: ServerDeps): Hono {
       const idaEnabled = (await d.repo.config.get<boolean>("IDA_ENABLED")) === true;
       const status = model !== "account.move" || !idaEnabled ? "ignored" : "pending";
       const eventId = await d.repo.odooEvents.insert({ odooModel: model, odooId: id, odooAction: typeof body._action === "string" ? body._action.slice(0, 200) : null, payload: { _model: model, _id: id, _action: body._action ?? null }, status });
-      d.log("webhook odoo", { model, id, eventId, status });
+      // eventId null = já havia notificação PENDENTE para esta fatura. O Odoo dispara por
+      // gravação, não por transição, então isso é o caso comum, não erro. 200 de qualquer jeito:
+      // o Odoo desiste em 1s e não reenvia.
+      d.log(eventId === null ? "webhook odoo: notificação colapsada (já havia pendente)" : "webhook odoo", { model, id, eventId, status });
       return c.json({ ok: true });
     } catch (e) {
       d.log("webhook odoo: falha ao persistir", { error: (e as Error).message });

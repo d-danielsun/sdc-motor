@@ -163,7 +163,7 @@ describe("retenção — o purge só apaga o que já foi processado", () => {
     const err = (await w.deps.repo.asaasEvents.insert({ asaasEventId: "velho-error", eventType: "PAYMENT_RECEIVED", asaasPaymentId: "pay_e", payload: {} }))!;
     await w.deps.repo.asaasEvents.mark(done, "done");
     await w.deps.repo.asaasEvents.mark(err, "error", { error: "o Odoo estava fora" });
-    await w.deps.repo.odooEvents.mark(await w.deps.repo.odooEvents.insert({ odooModel: "res.partner", odooId: 10, odooAction: null, payload: {} }), "ignored");
+    await w.deps.repo.odooEvents.mark((await w.deps.repo.odooEvents.insert({ odooModel: "res.partner", odooId: 10, odooAction: null, payload: {} }))!, "ignored");
     await w.pool.query("update audit_log set created_at = now() - interval '200 days' where endpoint like 'GET%'");
     await w.pool.query("update webhook_events set processed_at = now() - interval '200 days'");
     await w.pool.query("update odoo_events set processed_at = now() - interval '200 days'");
@@ -231,13 +231,16 @@ describe("U8 — dois workers no mesmo tick", () => {
     for (let i = 0; i < 4; i++) await w.deps.repo.odooEvents.insert({ odooModel: "account.move", odooId: i, odooAction: null, payload: {} });
     const now = w.deps.clock.now();
     const [a, b] = await Promise.all([w.deps.repo.asaasEvents.pending(4, now), w.deps.repo.asaasEvents.pending(4, now)]);
-    const ids = [...a, ...b].map((e) => e.id);
+    const reservados = [...a, ...b];
+    const ids = reservados.map((e) => e.id);
     expect(new Set(ids).size).toBe(6); expect(ids).toHaveLength(6);
     const [c, d] = await Promise.all([w.deps.repo.odooEvents.pending(3, now), w.deps.repo.odooEvents.pending(3, now)]);
     expect(new Set([...c, ...d].map((e) => e.id)).size).toBe(4);
     expect(await w.deps.repo.asaasEvents.pending(10, now)).toHaveLength(0);                      // tudo reservado
     const later = new Date(now.getTime() + (CLAIM_TTL_MINUTES + 1) * 60_000);
-    await w.deps.repo.asaasEvents.touch(ids[0]!, new Date(later.getTime() - 60_000));         // este ainda está sendo trabalhado
+    // Com o token da própria reserva: desde a #15, `touch` sem token não renova lock de ninguém —
+    // era assim que um worker que voltou depois do TTL estendia a reserva de quem assumiu.
+    await w.deps.repo.asaasEvents.touch(ids[0]!, new Date(later.getTime() - 60_000), reservados[0]!.claimToken);
     expect((await w.deps.repo.asaasEvents.pending(10, later)).map((e) => e.id)).not.toContain(ids[0]);
     expect(await w.deps.repo.asaasEvents.pending(10, new Date(later.getTime() + 20 * 60_000))).toHaveLength(6);
   });
@@ -248,9 +251,12 @@ describe("U8 — dois workers no mesmo tick", () => {
     const timers: Array<() => void> = [];
     const sched = startScheduler(w.deps, { setInterval: ((fn: () => void) => { timers.push(fn); return 0 as never; }) as never, clearInterval: (() => undefined) as never });
     await Promise.all([sched.tick(), sched.tick(), sched.tick()]);   // 3 ticks concorrentes (13h UTC ≥ 09h): um só reconcile
-    expect(max).toBe(1); expect(calls).toBe(2);   // RECEIVED + RECEIVED_IN_CASH, uma varredura só
+    // 4 = 2 status (RECEIVED, RECEIVED_IN_CASH) × 2 passes (data de pagamento, data de CRÉDITO).
+    // O passe por crédito entrou na #15: boleto pago numa quinta e creditado na terça sai da janela
+    // de pagamento justo quando vira RECEIVED. `max === 1` é o que importa aqui: uma varredura só.
+    expect(max).toBe(1); expect(calls).toBe(4);
     await sched.tick();                            // já rodou hoje: não roda de novo
-    expect(calls).toBe(2);
+    expect(calls).toBe(4);
     await sched.stop();
   });
 });

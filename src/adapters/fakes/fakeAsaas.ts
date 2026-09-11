@@ -34,7 +34,7 @@ export class FakeAsaas implements AsaasClient {
     const id = this.next("pay");
     const pay: AsaasPayment = {
       id, customer: p.customer, status: "PENDING", billingType: "BOLETO", value: money(p.value), netValue: null, originalValue: null, interestValue: null,
-      dueDate: p.dueDate, paymentDate: null, clientPaymentDate: null, creditDate: null, externalReference: p.externalReference,
+      dueDate: p.dueDate, paymentDate: null, clientPaymentDate: null, creditDate: null, estimatedCreditDate: null, externalReference: p.externalReference,
       bankSlipUrl: `https://sandbox.asaas.com/b/pdf/${id}`, invoiceUrl: `https://sandbox.asaas.com/i/${id}`, invoiceNumber: String(10_000 + this.n), nossoNumero: String(20_000 + this.n), deleted: false,
     };
     this.payments.set(id, pay);
@@ -50,10 +50,11 @@ export class FakeAsaas implements AsaasClient {
     if (p.status === "RECEIVED" || p.status === "RECEIVED_IN_CASH") throw new Error("fake asaas: não é possível apagar cobrança recebida");
     p.deleted = true; this.deleted.push(id);
   }
-  async *listPayments(f: { status?: string; paymentDateFrom?: string; externalReference?: string }): AsyncIterable<AsaasPayment> {
+  async *listPayments(f: { status?: string; paymentDateFrom?: string; creditDateFrom?: string; externalReference?: string }): AsyncIterable<AsaasPayment> {
     for (const p of this.payments.values()) {
       if (f.status && p.status !== f.status) continue;
       if (f.paymentDateFrom && (p.paymentDate ?? "") < f.paymentDateFrom) continue;
+      if (f.creditDateFrom && (p.estimatedCreditDate ?? p.creditDate ?? "") < f.creditDateFrom) continue;   // mesmo campo que o cliente real filtra
       if (f.externalReference && p.externalReference !== f.externalReference) continue;
       yield { ...p };
     }

@@ -1,6 +1,6 @@
 import { serve } from "@hono/node-server";
 import { createAuthStore } from "../adapters/db/auth.js";
-import { assertMigrated } from "../adapters/db/migrations.js";
+import { assertLeitura, assertMigrated } from "../adapters/db/migrations.js";
 import { createConsoleApi } from "./console.js";
 import { createJobRunner, startScheduler } from "./scheduler.js";
 import { createServer } from "./server.js";
@@ -10,6 +10,8 @@ const env = readEnv();
 for (const w of env.warnings) jsonLog("aviso de configuração", { warning: w });
 const { deps, queries, pool, close } = buildDeps(env);
 await assertMigrated(pool).catch((e) => { console.error(String((e as Error).message)); process.exit(1); });
+// Depois das migrations, e antes de qualquer coisa: o motor consegue LER? Ver assertLeitura.
+await assertLeitura(pool, (m) => jsonLog("aviso de leitura", { warning: m })).catch((e) => { console.error(String((e as Error).message)); process.exit(1); });
 // O link do e-mail de alerta mora em app_config (o núcleo não lê env). Semeado no boot para
 // que trocar o endereço público seja mudar o env e reiniciar.
 if (env.CONSOLE_PUBLIC_URL) await deps.repo.config.set("CONSOLE_PUBLIC_URL", env.CONSOLE_PUBLIC_URL).catch(() => undefined);

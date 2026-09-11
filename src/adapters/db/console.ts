@@ -65,8 +65,18 @@ export function createConsoleQueries(db: { query: pg.Pool["query"] }): ConsoleQu
       if (f.dueTo) { params.push(f.dueTo); where.push(`c.due_date <= $${params.length}::date`); }
       if (f.partnerId) { params.push(f.partnerId); where.push(`c.odoo_partner_id = $${params.length}`); }
       if (f.q) { params.push(`%${escapeLike(f.q)}%`); where.push(`(c.invoice_name ilike $${params.length} or cm.name ilike $${params.length} or c.nosso_numero ilike $${params.length} or c.asaas_payment_id ilike $${params.length})`); }
+      // `total` é contado com os MESMOS filtros, mas sem o corte do keyset: quem pagina quer
+      // saber o tamanho do conjunto, não quantos faltam.
       const w = where.length ? `where ${where.join(" and ")}` : "";
       const total = Number((await db.query(`select count(*)::int as n from charges c left join customers_map cm on cm.odoo_partner_id=c.odoo_partner_id ${w}`, params)).rows[0]?.n ?? 0);
+      if (f.after) {
+        // (due_date, id) > (data, id): comparação de tupla, que o índice (due_date, id) da 0004
+        // atende direto. Sem repetir linha e sem custo crescente por página.
+        const p = [...params, f.after.dueDate, f.after.id];
+        const corte = `(c.due_date, c.id) > ($${p.length - 1}::date, $${p.length})`;
+        const rows = (await db.query(`${CHARGE_SELECT} ${where.length ? `where ${where.join(" and ")} and ${corte}` : `where ${corte}`} order by c.due_date asc, c.id asc limit $${p.length + 1}`, [...p, limit])).rows as Row[];
+        return page(rows, total, limit, 0, chargeRow);   // `offset: 0` no modo keyset: não há deslocamento, o corte é o cursor
+      }
       const rows = (await db.query(`${CHARGE_SELECT} ${w} order by c.due_date asc, c.id asc limit $${params.length + 1} offset $${params.length + 2}`, [...params, limit, offset])).rows as Row[];
       return page(rows, total, limit, offset, chargeRow);
     },
