@@ -183,6 +183,27 @@ describe("volta: webhook do Asaas → baixa na parcela exata", () => {
     expect(await w.deps.repo.exceptions.hasOpen("amount_divergent", "charges")).toBe(true);
     expect(await w.deps.repo.exceptions.hasOpen("writeoff_needed", "charges")).toBe(true);
   });
+  it("um centavo a menos ou a mais não marca a parcela como recebida sem regra contábil", async () => {
+    const { w, pays: [p1, p2] } = await idaPronta();
+    await w.deps.repo.asaasEvents.insert({ asaasEventId: "cent_down", eventType: "PAYMENT_RECEIVED", asaasPaymentId: p1!.id, payload: w.asaas.confirm(p1!.id, { value: "99.99" }) });
+    await w.deps.repo.asaasEvents.insert({ asaasEventId: "cent_up", eventType: "PAYMENT_RECEIVED", asaasPaymentId: p2!.id, payload: w.asaas.confirm(p2!.id, { value: "100.01" }) });
+    await processAsaasEvents(w.deps);
+    expect(w.odoo.payments).toHaveLength(0);
+    expect((await w.deps.repo.charges.getByMoveLine(1001))!.status).toBe("created");
+    expect((await w.deps.repo.charges.getByMoveLine(1002))!.status).toBe("created");
+    expect(await w.deps.repo.exceptions.hasOpen("amount_divergent", "charges")).toBe(true);
+    expect(await w.deps.repo.exceptions.hasOpen("writeoff_needed", "charges")).toBe(true);
+  });
+  it("excedente segue bloqueado se o residual mudou e JUROS_MULTA_AUTO já estava salvo como true", async () => {
+    const { w, pays: [p1] } = await idaPronta();
+    w.odoo.lines.get(1001)!.amountResidual = "100.01";
+    await w.deps.repo.config.set("JUROS_MULTA_AUTO", true);
+    await w.deps.repo.asaasEvents.insert({ asaasEventId: "old_config", eventType: "PAYMENT_RECEIVED", asaasPaymentId: p1!.id, payload: w.asaas.confirm(p1!.id, { interest: "0.01" }) });
+    await processAsaasEvents(w.deps);
+    expect(w.odoo.payments).toHaveLength(0);
+    expect((await w.deps.repo.charges.getByMoveLine(1001))!.status).toBe("created");
+    expect(await w.deps.repo.exceptions.hasOpen("writeoff_needed", "charges")).toBe(true);
+  });
   it("pagamento com nossa referência sem cobrança → payment_unmatched (erro); referência alheia → ignorado", async () => {
     const w = await fresh();
     const cust = await w.asaas.createCustomer({ name: "x", cpfCnpj: CPF_OK, externalReference: "odoo:partner:1", notificationDisabled: true });

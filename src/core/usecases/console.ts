@@ -91,7 +91,7 @@ async function requeueAsaasEvent(deps: Deps, eventId: number | null, asaasPaymen
   return { ok: true, action: "asaas_event_requeued", detail: { eventId: ev.id } };
 }
 
-/** Q3 na prática: o financeiro aceita juros/multa deste pagamento e a baixa acontece pelo valor recebido — se ele ainda está recebido. */
+/** Só tenta a baixa após conferir o pagamento vivo; excedente segue bloqueado até S0.3/Q3. */
 export async function acceptWriteoff(deps: Deps, id: number, by: string): Promise<ActionResult> {
   const r = await openException(deps, id);
   if (!r.ok) return r.error;
@@ -102,6 +102,7 @@ export async function acceptWriteoff(deps: Deps, id: number, by: string): Promis
   if (p.deleted || !(RECEIVED_STATUSES as readonly string[]).includes(p.status)) return fail("invalid_state", `pagamento não está mais recebido no Asaas (status ${p.status}${p.deleted ? ", apagado" : ""})`);
   const outcome = await receivePayment(deps, p, "console", { acceptWriteoff: true });
   if (outcome === "busy") return fail("busy", "cobrança em uso por outra execução — tente de novo");
+  if (outcome === "writeoff_needed") return fail("invalid_state", "excedente ainda sem tratamento contábil aprovado (S0.3/Q3); nenhuma baixa foi feita no Odoo");
   if (outcome !== "received" && outcome !== "already") return fail("invalid_state", `baixa não aconteceu: ${outcome}`);
   await deps.repo.exceptions.setStatus(id, "resolved", by);
   return { ok: true, action: "writeoff_accepted", detail: { outcome } };
@@ -197,6 +198,7 @@ export async function setConsoleConfig(deps: Deps, key: string, value: unknown):
   if (!(CONSOLE_CONFIG_KEYS as readonly string[]).includes(key)) return fail("invalid_input", `chave não editável: ${key}`);
   const k = key as ConsoleConfigKey;
   if (!validators[k](value)) return fail("invalid_input", `valor inválido para ${k}`);
+  if (k === "JUROS_MULTA_AUTO" && value === true) return fail("invalid_state", "baixa automática de juros/multa depende do spike S0.3 e da definição contábil Q3");
   // Ligar a ida sem data de corte emitiria boleto pro histórico inteiro do Odoo na primeira varredura (red team).
   if (k === "IDA_ENABLED" && value === true && !(await deps.repo.config.get<string | null>("GO_LIVE_CUTOFF_DATE"))) return fail("invalid_state", "defina GO_LIVE_CUTOFF_DATE antes de ligar IDA_ENABLED");
   if (k === "GO_LIVE_CUTOFF_DATE" && value === null && (await deps.repo.config.get<boolean>("IDA_ENABLED")) === true) return fail("invalid_state", "desligue IDA_ENABLED antes de remover a data de corte");

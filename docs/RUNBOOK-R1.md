@@ -299,11 +299,11 @@ acontecer, porque a partir desse clique sai boleto de verdade.
 
 ### Quando o cliente pagar com juros
 
-Se o boleto for pago depois do vencimento, o Asaas cobra juros e multa, e o valor recebido fica
-acima do da cobrança. O motor **não** baixa sozinho nesse caso: abre uma exceção
-`writeoff_needed` com o botão "aceitar diferença". Aceitar registra a baixa no Odoo com o valor
-recebido. Se o financeiro preferir que isso seja automático, ligue `JUROS_MULTA_AUTO` na
-Configuração — a decisão é de quem fecha o mês, não do motor.
+Se o boleto for pago depois do vencimento, o Asaas pode informar valor recebido acima do
+residual da parcela. O motor abre `writeoff_needed` e **não faz a baixa no Odoo**: o diário,
+a conta e o tratamento da diferença ainda dependem do spike S0.3 e da decisão contábil Q3.
+O financeiro deve conferir o pagamento e tratar o caso no Odoo. `JUROS_MULTA_AUTO` não pode
+ser ativado até essa validação; a API também recusa a tentativa de aceitar a diferença.
 
 ## Como desligar tudo
 
@@ -325,7 +325,7 @@ longa é recuperada pelo reconcile diário, dentro da janela de lookback.
 | Nenhum boleto sai | Emissão desligada, ou régua depois da data da fatura | Tela Configuração: confira os dois |
 | `customer_missing_document` | Cadastro do Odoo sem CPF/CNPJ válido | Corrija no Odoo, clique em reprocessar |
 | `amount_divergent` | Cliente pagou valor diferente | Decisão humana: nada é baixado sozinho |
-| `writeoff_needed` | Pagou com juros e multa do Asaas | Botão "aceitar diferença", ou ligue `JUROS_MULTA_AUTO` |
+| `writeoff_needed` | Valor recebido excede o residual da parcela | Conferir no Asaas/Odoo e tratar manualmente; S0.3/Q3 definem a futura automação |
 | `queue_interrupted` | Asaas interrompeu a fila após 15 falhas | O motor já pediu reativação; veja por que o endpoint falhou |
 | `integration_error` | Job falhando (chave vencida, base expirada, banco fora) | O detalhe da exceção tem o erro cru |
 | `stale_heartbeat` | Nenhum pagamento há 8h em horário comercial | Confira no painel do Asaas se houve pagamento hoje |

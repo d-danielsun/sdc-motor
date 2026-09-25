@@ -122,18 +122,20 @@ sem ele, um retry depois de timeout duplica pagamento no ERP do cliente.
 
 ## Passo 5 — pagamento parcial vira o que?
 
-Na **segunda** parcela, registre **metade** do valor, com uma `ref` nova.
+Na **segunda** parcela, registre **metade** do valor, com uma `ref` nova, somente na duplicata.
 
-**Esperado:** o motor **recusa** com mensagem dizendo que o residual caiu menos que o valor
-pedido, e a baixa não é confirmada. Essa recusa é proposital: ela é a defesa que impediu uma
-baixa falsa no QA. Se ele **aceitar** e marcar como recebido, é um P1.
+**Esperado no adaptador:** o wizard pode aplicar uma baixa parcial e devolver a parcela ainda
+aberta. Isso confirma o comportamento do Odoo, mas **não autoriza o fluxo do motor** a marcar a
+cobrança como recebida. O núcleo recusa valor recebido diferente do residual e abre exceção.
 
 Confira que a parcela ficou com residual parcial e `reconciled: false`.
 
 ## Passo 6 — diferença de valor: juros, multa e centavos (issue #2)
 
 É o que falta implementar, e este passo define **como**. Na segunda parcela (ainda aberta),
-registre um valor **acima** do residual, com `ref` nova.
+examine o valor **acima** do residual pelo assistente na interface do Odoo da duplicata, com
+o financeiro/contador. O adaptador bloqueia essa chamada antes da escrita até Q3, para não
+criar crédito solto por engano.
 
 Três resultados possíveis, e cada um leva a um caminho diferente:
 

@@ -54,9 +54,9 @@ describe("SPA do console", () => {
     expect([...new Set(chamadas)].filter((c) => !casa(c))).toEqual([]);
 
     // O curinga acima aceitaria uma ação inventada em `/exceptions/:id/${x}`. Estas são as
-    // quatro que existem, e o app.js não pode ter outra.
+    // A API mantém accept-writeoff bloqueada até S0.3/Q3; a UI só mostra as ações seguras.
     const acoes = [...app.matchAll(/acao\("[^"]+", "([^"]+)"/g)].map((m) => m[1] as string);
-    expect(acoes.sort()).toEqual(["accept-writeoff", "ignore", "reprocess", "resolve"]);
+    expect(acoes.sort()).toEqual(["ignore", "reprocess", "resolve"]);
     for (const a of acoes) expect(consoleTs, `a API não tem /exceptions/:id/${a}`).toContain(`/exceptions/:id/${a}`);
   });
 
@@ -94,15 +94,16 @@ describe("SPA do console", () => {
   });
 
   it("as ações destrutivas passam por confirmação, com texto do que vai acontecer", () => {
-    // accept-writeoff mexe no ERP; IDA_ENABLED faz boleto sair; enable-notifications dispara
-    // cobrança para todo mundo. As três abrem um diálogo com título, texto e rótulo do botão.
+    // IDA_ENABLED faz boleto sair; enable-notifications dispara cobrança para todo mundo.
+    // Ambos abrem um diálogo com título, texto e rótulo do botão.
     // A janela olha para TRÁS também. Olhando só para frente, o que este teste achava era a
     // DEFINIÇÃO de `confirmar()`, lá embaixo no arquivo — não a chamada. Ele passou por acaso
     // até um comentário empurrar a definição para fora dos 900 caracteres, e aí "reprovou" uma
     // confirmação que sempre existiu. Proximidade em texto-fonte mede distância, não intenção:
     // por isso agora exige a CHAMADA (`await confirmar(`) perto do uso.
     const corpoDaFuncao = app.slice(app.indexOf("function confirmar("));
-    for (const trecho of ["accept-writeoff", "IDA_ENABLED", "enable-notifications"]) {
+    expect(app).not.toContain('acao("aceitar diferença"');
+    for (const trecho of ["IDA_ENABLED", "enable-notifications"]) {
       const posicoes = [...app.matchAll(new RegExp(trecho.replace(/[-/]/g, "\\$&"), "g"))].map((m) => m.index ?? 0)
         .filter((i) => i < app.indexOf("function confirmar("));   // ocorrências no código, não na própria função
       expect(posicoes.length, `${trecho} não aparece no app.js`).toBeGreaterThan(0);

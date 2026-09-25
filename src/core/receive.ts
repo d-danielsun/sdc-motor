@@ -70,6 +70,14 @@ async function receiveLocked(deps: Deps, p: AsaasPayment, externalRef: string, s
     await repo.exceptions.openOnce({ type: cls.reason, refTable: "charges", refId: charge.id, detail: { asaasPaymentId: p.id, received: p.value, expected: charge.amount, originalValue: p.originalValue, interestValue: p.interestValue, policy: cls.policy } });
     return cls.reason === "amount_divergent" ? "divergent" : "writeoff_needed";
   }
+  // Mesmo com residual ajustado no Odoo, nenhum caminho (config antiga ou console) pode
+  // aceitar diferença contra a cobrança original antes da definição contábil S0.3/Q3.
+  const diffCents = toCents(p.value) - toCents(charge.amount);
+  if (diffCents !== 0) {
+    const type = diffCents > 0 ? "writeoff_needed" : "amount_divergent";
+    await repo.exceptions.openOnce({ type, refTable: "charges", refId: charge.id, detail: { stage: "pre-check odoo", reason: "valor recebido difere da cobrança; tratamento contábil pendente de S0.3/Q3", asaasPaymentId: p.id, received: p.value, expected: charge.amount, policy: cls.policy } });
+    return diffCents > 0 ? "writeoff_needed" : "divergent";
+  }
   const paymentDate = p.paymentDate ?? p.clientPaymentDate ?? clock.today();
   const recBase = { amountReceived: p.value, amountExpected: charge.amount, netValue: p.netValue, paymentDate, creditDate: p.creditDate };
   const patch = { asaasPaymentId: p.id, nossoNumero: p.nossoNumero, asaasInvoiceNumber: p.invoiceNumber };
@@ -87,6 +95,16 @@ async function receiveLocked(deps: Deps, p: AsaasPayment, externalRef: string, s
   }
   if (Math.abs(toCents(line.amountResidual) - toCents(charge.amount)) > toleranceCents) {
     await repo.exceptions.openOnce({ type: "amount_divergent", refTable: "charges", refId: charge.id, detail: { stage: "pre-check odoo", reason: "residual da parcela no Odoo difere da cobrança (pagamento parcial, parcela alterada?)", residual: line.amountResidual, expected: charge.amount, asaasPaymentId: p.id } });
+    return "divergent";
+  }
+  // S0.3/Q3 ainda não definiu a conta nem o tratamento contábil do excedente.
+  // Mesmo uma aprovação no console ou JUROS_MULTA_AUTO não pode criar crédito solto no Odoo.
+  if (toCents(p.value) > toCents(line.amountResidual)) {
+    await repo.exceptions.openOnce({ type: "writeoff_needed", refTable: "charges", refId: charge.id, detail: { stage: "pre-check odoo", reason: "valor recebido excede o residual; tratamento contábil pendente de S0.3/Q3", asaasPaymentId: p.id, received: p.value, residual: line.amountResidual, policy: cls.policy } });
+    return "writeoff_needed";
+  }
+  if (toCents(p.value) < toCents(line.amountResidual)) {
+    await repo.exceptions.openOnce({ type: "amount_divergent", refTable: "charges", refId: charge.id, detail: { stage: "pre-check odoo", reason: "valor recebido é menor que o residual; a parcela ficaria aberta", asaasPaymentId: p.id, received: p.value, residual: line.amountResidual } });
     return "divergent";
   }
 

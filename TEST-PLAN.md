@@ -1,5 +1,12 @@
 # TEST-PLAN — Console do financeiro (#13) + endurecimento (#15) e alertas (#14)
 
+## Atualização 25/09/2026 — S0.3/Q3
+
+O teste histórico abaixo descreve a interface anterior. Até a confirmação do wizard na
+duplicata e da conta contábil pelo financeiro, o botão “aceitar diferença” saiu do console,
+`JUROS_MULTA_AUTO=true` retorna 409 e a API de aceite também retorna 409 para excedente.
+O novo teste de fluxo confere que um centavo a mais ou a menos não produz baixa no Odoo.
+
 > Um por feature, versionado na branch, junto do código — vive dentro do PR.
 > §1/§2/§4/§5 são o de sempre (o que mudou, roteiro, evidência, follow-ups).
 > A §3 (caça-unknowns) é o passo obrigatório: o que só aparece USANDO.

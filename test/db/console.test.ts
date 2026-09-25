@@ -84,7 +84,7 @@ describe("console API", () => {
     expect((await w.api(`/exceptions/${ex2}`)).body).toMatchObject({ status: "ignored", resolvedBy: USUARIO.email });
     expect((await w.api(`/exceptions/999999/resolve`, { method: "POST" })).status).toBe(404);
   });
-  it("write-off: juros do Asaas → writeoff_needed → financeiro aceita → baixa com diff_policy juros_multa; pagamento estornado → 409", async () => {
+  it("write-off: juros do Asaas continuam em exceção, sem escrita no Odoo até S0.3/Q3; estorno → 409", async () => {
     const w = await setup();
     const [p1, p2] = [...w.asaas.payments.values()];
     await w.deps.repo.asaasEvents.insert({ asaasEventId: "j1", eventType: "PAYMENT_RECEIVED", asaasPaymentId: p1!.id, payload: w.asaas.confirm(p1!.id, { interest: "3.10" }) });
@@ -94,12 +94,15 @@ describe("console API", () => {
     expect(exs).toHaveLength(2);
     const ex1 = exs.find((e: any) => e.charge.id === 1), ex2 = exs.find((e: any) => e.charge.id === 2);
     expect(ex1.charge).toMatchObject({ invoiceName: "INV/2026/0001", customerName: "Cliente Um Ltda" });
-    expect((await w.api(`/exceptions/${ex1.id}/accept-writeoff`, { method: "POST" })).body).toMatchObject({ ok: true, action: "writeoff_accepted" });
-    expect((await w.api(`/charges/1`)).body.received).toMatchObject({ amountReceived: "103.10", diffPolicy: "juros_multa" });
-    expect(w.odoo.payments[0]).toMatchObject({ amount: "103.10" });
+    const aceite = await w.api(`/exceptions/${ex1.id}/accept-writeoff`, { method: "POST" });
+    expect(aceite.status).toBe(409);
+    expect(aceite.body.error).toMatch(/S0\.3\/Q3/);
+    expect((await w.api(`/charges/1`)).body.received).toBeNull();
+    expect(w.odoo.payments).toHaveLength(0);
+    expect((await w.api(`/config/JUROS_MULTA_AUTO`, { method: "PUT", body: JSON.stringify({ value: true }) })).status).toBe(409);
     w.asaas.setStatus(p2!.id, "REFUNDED");
     const r = await w.api(`/exceptions/${ex2.id}/accept-writeoff`, { method: "POST" });
-    expect(r.status).toBe(409); expect(w.odoo.payments).toHaveLength(1);
+    expect(r.status).toBe(409); expect(w.odoo.payments).toHaveLength(0);
     expect((await w.api(`/exceptions/${(await w.api("/exceptions?type=amount_divergent")).body.data[0]?.id ?? 999999}/accept-writeoff`, { method: "POST" })).status).toBe(404);
   });
   it("cliente sem documento: corrigido no Odoo → reprocessar sincroniza só as faturas dele e cria as cobranças", async () => {
@@ -213,7 +216,7 @@ describe("console API", () => {
   it("config: gates R1 (IDA_ENABLED) e R3 (notificações como política); validação por chave; health-report", async () => {
     const w = await setup();
     expect((await w.api("/config")).body).toMatchObject({ IDA_ENABLED: true, TOLERANCE_BRL: "0.01", RECONCILE_LOOKBACK_DAYS: 3 });
-    for (const [k, v, st] of [["IDA_ENABLED", false, 200], ["IDA_ENABLED", "sim", 400], ["TOLERANCE_BRL", "0.50", 200], ["TOLERANCE_BRL", "0,50", 400], ["TOLERANCE_BRL", "9.00", 400], ["JUROS_MULTA_AUTO", true, 200], ["GO_LIVE_CUTOFF_DATE", null, 200], ["GO_LIVE_CUTOFF_DATE", "2026-99-99", 400], ["RECONCILE_LOOKBACK_DAYS", 7, 200], ["RECONCILE_LOOKBACK_DAYS", 0, 400], ["ASAAS_API_KEY", "x", 400]] as const) {
+    for (const [k, v, st] of [["IDA_ENABLED", false, 200], ["IDA_ENABLED", "sim", 400], ["TOLERANCE_BRL", "0.50", 200], ["TOLERANCE_BRL", "0,50", 400], ["TOLERANCE_BRL", "9.00", 400], ["JUROS_MULTA_AUTO", true, 409], ["GO_LIVE_CUTOFF_DATE", null, 200], ["GO_LIVE_CUTOFF_DATE", "2026-99-99", 400], ["RECONCILE_LOOKBACK_DAYS", 7, 200], ["RECONCILE_LOOKBACK_DAYS", 0, 400], ["ASAAS_API_KEY", "x", 400]] as const) {
       expect((await w.api(`/config/${k}`, { method: "PUT", body: JSON.stringify({ value: v }) })).status, `${k}=${JSON.stringify(v)}`).toBe(st);
     }
     expect((await w.api("/config")).body).toMatchObject({ IDA_ENABLED: false, TOLERANCE_BRL: "0.50", RECONCILE_LOOKBACK_DAYS: 7, GO_LIVE_CUTOFF_DATE: null });

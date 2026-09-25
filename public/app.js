@@ -311,11 +311,7 @@ async function abrirExcecao(id) {
     acoes.appendChild(acao("ignorar", "ignore"));
     if (e.charge) acoes.appendChild(acao("reprocessar", "reprocess"));
     if (e.type === "writeoff_needed") {
-      acoes.appendChild(acao("aceitar diferença", "accept-writeoff", "perigo", {
-        titulo: "Aceitar a diferença?",
-        corpo: "O motor vai registrar a baixa no Odoo com o valor recebido, assumindo a diferença como juros e multa. Isso mexe no ERP e não se desfaz por aqui.",
-        botao: "aceitar e baixar",
-      }));
+      corpo.appendChild(el("p", { class: "ajuda", texto: "Diferença pendente de tratamento contábil (S0.3/Q3). O financeiro deve conferir o caso no Odoo; nenhuma baixa automática será feita." }));
     }
     corpo.appendChild(acoes);
   }
@@ -461,9 +457,9 @@ async function carregarSaude() {
 // ── configuração ──────────────────────────────────────────────────────────
 const AJUDA = {
   IDA_ENABLED: "Kill switch da emissão. Desligado, nenhuma fatura vira boleto — nem as antigas, quando religar, se a data de corte for depois delas.",
-  TOLERANCE_BRL: "Diferença em reais que o motor aceita sem abrir exceção. Acima disso, alguém decide.",
+  TOLERANCE_BRL: "Limite usado para classificar diferenças. Até S0.3/Q3, qualquer valor recebido diferente da cobrança fica em exceção, sem baixa automática.",
   GO_LIVE_CUTOFF_DATE: "Régua: fatura com data anterior a esta nunca é cobrada pelo motor. Sem ela, nada é emitido.",
-  JUROS_MULTA_AUTO: "Ligado, o motor baixa sozinho quando a diferença é juros e multa do próprio Asaas. Desligado, isso vira uma exceção para aceitar na mão.",
+  JUROS_MULTA_AUTO: "Ativação suspensa até validar o wizard na duplicata e definir a conta contábil (S0.3/Q3). Diferenças permanecem em exceção.",
   RECONCILE_LOOKBACK_DAYS: "Quantos dias para trás o reconcile diário relê os pagamentos do Asaas.",
 };
 
@@ -478,6 +474,7 @@ async function carregarConfig() {
     if (booleano) {
       const sel = el("select", {}, [el("option", { value: "true", texto: "ligado" }), el("option", { value: "false", texto: "desligado" })]);
       sel.value = String(valor);
+      if (chave === "JUROS_MULTA_AUTO") sel.querySelector('option[value="true"]').disabled = true;
       topo.appendChild(sel);
       ler = () => sel.value === "true";
     } else {

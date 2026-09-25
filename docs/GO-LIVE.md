@@ -22,6 +22,10 @@ Responsável pelos itens acima: **[quem tem acesso à conta Asaas da SDC]**.
 
 ## 2. Odoo
 
+- [ ] [#29](https://github.com/d-danielsun/sdc-motor/issues/29): S0.1 executado com chave de API, fatura postada e linhas `payment_term`; teste sem skip e sem dados de cliente no log
+- [ ] [#2](https://github.com/d-danielsun/sdc-motor/issues/2): wizard S0.3 provado na duplicata neutralizada; diário, conta de diferença e write-off aprovados pelo contador
+- [ ] [#3](https://github.com/d-danielsun/sdc-motor/issues/3): regras `out_invoice` testadas na duplicata, inclusive cancelamento, duplicidade e varredura de recuperação
+- [ ] [#30–33](https://github.com/d-danielsun/sdc-motor/issues/30): matriz de mudanças, sinal, tarifa/extrato e reembolso decididos; cada tema tem escopo de piloto ou exceção manual aprovado
 - [ ] Usuário com chave de API criada e guardada no 1Password
 - [ ] **`ODOO_API_KEY_CREATED_AT` definido no ambiente** com a data de criação da chave. Sem
       ele o aviso de vencimento nunca dispara, e a baixa para de acontecer em silêncio no dia 90.
