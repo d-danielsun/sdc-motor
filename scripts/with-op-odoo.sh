@@ -15,9 +15,17 @@ EOF
   exit 1
 fi
 
+if ! command -v op >/dev/null 2>&1; then
+  echo '1Password CLI (op) não está instalado.' >&2
+  exit 1
+fi
+if ! op whoami >/dev/null 2>&1; then
+  echo '1Password sem sessão ativa. Abra o app/desbloqueie a conta e tente novamente.' >&2
+  exit 1
+fi
 if ! op item get "$ITEM" >/dev/null 2>&1; then
   cat >&2 <<EOF
-1Password: item "$ITEM" não encontrado.
+1Password: item "$ITEM" não está acessível nesta conta/cofre.
 
 Como criar a chave (2 min, não precisa ser admin — vale no seu próprio usuário):
   1. Entre em $ODOO_URL
