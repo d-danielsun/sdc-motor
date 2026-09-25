@@ -108,6 +108,9 @@ export class OdooJson2Client implements OdooClient {
       if (before.reconciled) return { paymentId: stray.id, paymentState: null };   // o retry chegou depois de o Odoo terminar: adota
       throw new HttpError("odoo", 409, { paymentId: stray.id, state: stray.state }, `odoo: já existe o pagamento #${stray.id} (${stray.state}) com ref ${p.ref}, mas a parcela ${p.moveLineId} continua aberta — conciliar manualmente, não re-rodar o wizard`);
     }
+    if (toCents(p.amount) > toCents(before.amountResidual)) {
+      throw new HttpError("odoo", 409, null, `odoo: valor ${p.amount} excede o residual ${before.amountResidual} da parcela ${p.moveLineId}; tratamento contábil pendente de S0.3/Q3`);
+    }
     const context = { active_model: "account.move.line", active_ids: [p.moveLineId] };
     const created = await this.call<unknown>("account.payment.register", "create", { context, vals_list: [{ amount: Number(p.amount), payment_date: p.paymentDate, communication: p.ref }] });
     const wizardId = Array.isArray(created) ? created[0] : created;

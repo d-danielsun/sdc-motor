@@ -40,11 +40,11 @@ Container completo (AC14 — a prova de que não depende do Supabase): `docker c
 | Rota | O quê |
 |---|---|
 | `GET /exceptions?status=open\|resolved\|ignored&type=&limit=&offset=` · `GET /exceptions/:id` | fila de exceções, com a cobrança/cliente juntos |
-| `POST /exceptions/:id/resolve` · `/ignore` · `/reprocess` · `/accept-writeoff` | ações do financeiro (só em exceção aberta); reprocessar reenfileira o evento ou relê a fatura — nunca atalha o fluxo; aceitar write-off exige o pagamento ainda recebido no Asaas |
+| `POST /exceptions/:id/resolve` · `/ignore` · `/reprocess` · `/accept-writeoff` | ações do financeiro (só em exceção aberta); reprocessar reenfileira o evento ou relê a fatura. Aceitar write-off está bloqueado até S0.3/Q3: nenhum excedente é baixado automaticamente no Odoo |
 | `GET /charges?status=a,b&due_from=&due_to=&partner=&q=&limit=&offset=` · `GET /charges/:id` | cobranças com cliente, boleto, conciliação, eventos |
 | `GET /dashboard` | aging das cobranças abertas (a vencer / 1–7 / 8–30 / 31+) |
 | `GET /health-report` | kill switch, régua, abertas, exceções por tipo, último evento/varredura/reconcile/watchdog, fila do Asaas, idade da key |
-| `GET /config` · `PUT /config/:key {value}` | `IDA_ENABLED` (gate R1), `TOLERANCE_BRL` (≤5,00, teto em `src/core/limits.ts`), `GO_LIVE_CUTOFF_DATE`, `JUROS_MULTA_AUTO`, `RECONCILE_LOOKBACK_DAYS` (1–30) |
+| `GET /config` · `PUT /config/:key {value}` | `IDA_ENABLED` (gate R1), `TOLERANCE_BRL` (≤5,00; não libera baixa divergente até S0.3/Q3), `GO_LIVE_CUTOFF_DATE`, `JUROS_MULTA_AUTO` (ativação suspensa), `RECONCILE_LOOKBACK_DAYS` (1–30) |
 | `POST /customers/enable-notifications` | gate R3: responde **202** e liga a régua em segundo plano, retomável; progresso no `health-report` |
 | `POST /exceptions/requeue-all?type=` | reenfileira em lote os eventos em `error` das exceções abertas daquele tipo; a exceção NÃO é resolvida aqui |
 | `GET /charges?after_due_date=&after_id=` | paginação keyset (os dois juntos); o `offset` continua valendo e é ignorado quando o cursor vem |
@@ -185,7 +185,7 @@ uma exceção pela primeira vez em produção, no dia em que ela importa.
 | `ciclo-feliz` | 1 fatura, 2 parcelas, boletos criados, 1 paga e baixada com diferença zero |
 | `sem-cpf` | fatura de cliente sem CPF/CNPJ: exceção `customer_missing_document`, nenhuma cobrança |
 | `divergente` | pagamento de R$ 90 numa cobrança de R$ 100: `amount_divergent`, sem baixa |
-| `juros` | pagamento de R$ 103,10 com `originalValue` R$ 100: `writeoff_needed`, pronto para aceitar |
+| `juros` | pagamento de R$ 103,10 com `originalValue` R$ 100: `writeoff_needed`, pendente de tratamento contábil |
 | `fila-parada` | webhook interrompido: `queue_interrupted` aberta e penalizações registradas |
 | `tudo` | todos os anteriores, mais 3 cobranças vencidas para o aging mostrar as 4 faixas |
 
@@ -266,5 +266,5 @@ confirmar. Escrever só em duplicata de teste, nunca na base de produção.
 
 ## O que ainda depende de acesso externo
 
-- **S0.1/S0.3** — `OdooJson2Client.registerPayment` segue o desenho da spec; campos exigidos pelo wizard e o tratamento de diferença (juros/multa) se confirmam na duplicata de teste.
+- **S0.1/S0.3** — S0.1 precisa de chave de API e uma fatura postada com `payment_term` para passar. `OdooJson2Client.registerPayment` segue o desenho da spec; campos exigidos pelo wizard e o tratamento de diferença (juros/multa) se confirmam na duplicata de teste. Até lá, o motor bloqueia a baixa de valor diferente do residual.
 - **Webhook do Asaas de verdade** — precisa de URL pública (Supabase, túnel ou container publicado) para o `register-asaas-webhook`.

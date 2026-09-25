@@ -6,3 +6,6 @@ dist/
 coverage/
 *.log
 .DS_Store
+
+# Apresentação local com contatos e inventário de acessos (repositório público).
+docs/RETOMADA-SDC.html

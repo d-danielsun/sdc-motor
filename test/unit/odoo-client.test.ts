@@ -54,6 +54,15 @@ describe("OdooJson2Client desconfiado", () => {
     await expect(recusa.registerPayment({ moveLineId: 1001, amount: "100.00", paymentDate: "2026-09-10", ref: "asaas:pay_1" })).rejects.toThrow(/já existe o pagamento #88/);
     await expect(client([() => line(100), noStray, () => res(200, JSON.stringify({ id: "x" }))]).registerPayment({ moveLineId: 1001, amount: "100.00", paymentDate: "2026-09-10", ref: "r" })).rejects.toThrow(/id numérico/);
   });
+  it("recusa excedente antes de criar o wizard, inclusive um centavo", async () => {
+    let calls = 0;
+    const c = client([
+      () => { calls++; return line(100); },
+      () => { calls++; return res(200, "[]"); },
+    ]);
+    await expect(c.registerPayment({ moveLineId: 1001, amount: "100.01", paymentDate: "2026-09-10", ref: "asaas:pay_1" })).rejects.toThrow(/excede o residual/);
+    expect(calls).toBe(2);
+  });
   it("erro 401 do Odoo é definitivo (não transiente); 500 é transiente", () => {
     expect(new HttpError("odoo", 401, {}).transient).toBe(false);
     expect(new HttpError("odoo", 503, {}).transient).toBe(true);
