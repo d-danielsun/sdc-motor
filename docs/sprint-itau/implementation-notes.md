@@ -41,3 +41,38 @@ Desvios e decisões: o que forçou, o que foi decidido, por quê.
     seguem valendo — o AsaasGateway delega chamando o client a cada operação.
 - `buildDeps` devolve também o `AsaasHttpClient` cru para o job `register-asaas-webhook` (criar
   webhook é operação de provisionamento do Asaas, não do núcleo — não entrou na porta).
+
+## Itens 5–7 (Itaú auth, stub, probes)
+- **Transporte com `node:https` (https.Agent)**, não undici: mesmo desenho do relay em produção, sem
+  dependência nova. Recusa construir sem cert/key, com chave que não confere com o cert, ou com
+  `NODE_TLS_REJECT_UNAUTHORIZED=0`.
+- **Solicitação do 1º certificado usa transporte SEM cert de cliente** (`createBootstrapTransport`): não
+  existe certificado ainda — o banco autentica pelo token temporário. Renovação usa mTLS.
+- `ItauClient` exige cert/key mesmo quando o transporte é injetado (P7 vale para toda montagem).
+- Testes do Itaú sobem servidor HTTPS local com `requestCert + rejectUnauthorized` e PKI gerada por
+  `openssl` em tmpdir (`test/itau-fixtures.ts`) — o mTLS é exercitado de verdade, nada é versionado.
+- **"401 → refresh 1x"** (loss.md) foi implementado na chamada de API (`itauAuthedRequest`): 401 da API
+  invalida o token, pede outro e repete uma vez. 401 do próprio STS não tem retry (P5).
+- **`canIssue` na porta.** Para P3/P9 serem verdade em todo caminho, além da recusa de boot: o console
+  recusa ligar a ida com gateway sem emissão, e `handleInvoice` não emite por ele (pula, sem exceção).
+  Sem isso, a varredura com Itaú abriria `charge_create_failed` para cada parcela.
+- **Boot (P9) em dois lugares**, porque a ida mora em `app_config` e não em env: `readEnv` recusa
+  `GATEWAY=itau` com `IDA_ENABLED` ligado por env; `assertGatewayBoot` (chamado no `main.ts` depois das
+  migrations) recusa com a ida ligada no banco. Valor não-booleano no banco conta como ligado.
+- Com `GATEWAY=itau`, `ASAAS_API_KEY` deixa de ser obrigatória; `ASAAS_WEBHOOK_TOKEN` continua (a rota
+  `/webhook-asaas` segue montada). `register-asaas-webhook` recusa rodar sem `GATEWAY=asaas`.
+- `ItauGateway.parseSettlementEvent` LANÇA em vez de devolver null: devolver null marcaria eventos como
+  `ignored` em silêncio. Lançando, o worker deixa o evento em `error` com exceção visível.
+- O score.sh procura linhas novas em `src` com `IDA_ENABLED` e `true`/`"1"` juntos; o código novo
+  evita essa combinação na mesma linha (o comportamento é o oposto do que o check teme — recusa ligar).
+
+## Item 8 (wizard e docs)
+- `scripts/wizard-sdc-itau.sh`: biblioteca copiada sem edição (diff zero contra o template); só os
+  estágios foram escritos. `bash -n` ok; `shellcheck` 0.11 (via npx, fora do repo) aponta apenas
+  SC2034 (`RED` sem uso) **dentro da biblioteca**, que a regra do template proíbe editar.
+- Segredos vão para o 1Password, não para o `.env` (o `ENV_FILE` do wizard é `.env.itau.local`, ignorado
+  pelo `.gitignore`, e recebe só agência/conta/Client ID). O token temporário não é gravado.
+- Decifrar o e-mail do banco: o wizard não executa comando nenhum — formato desconhecido; mostra
+  exemplos marcados como "confirme com o banco".
+- `~/w/salvei/propostas/sdc/02-SPEC.md` (fora de git): nova seção "§Itaú (v2)" com as lacunas L1–L5;
+  backup da versão anterior no scratchpad da sessão. Status/título ganharam a marca v2.

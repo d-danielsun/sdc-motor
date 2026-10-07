@@ -9,8 +9,8 @@ Motor de cobrança Odoo ↔ Asaas da SDC (deal Salvei, R$ 8k/mês). Fatura posta
 - `npm run dev` — API local (`/health`, `/webhook-asaas`, `/webhook-odoo?k=`, console em `/console/`). `npm run job -- <nome>` — roda um job (sync-invoices, reconcile-daily, watchdog…) ou `console-user` para criar acesso.
 
 ## Estrutura
-- `src/core/` — tipos, máquina de estados de `charges`, casos de uso, **portas** (`OdooClient`, `AsaasClient`, `Repo`, `Clock`). Puro.
-- `src/adapters/` — `asaas/` (fetch), `odoo/` (JSON-2 `/json/2`), `db/` (pg), `fakes/` (Odoo e Asaas em memória pra testes).
+- `src/core/` — tipos, máquina de estados de `charges`, casos de uso, **portas** (`OdooClient`, `ChargeGateway`, `Repo`, `Clock`). Puro. Tipos `Asaas*` só em `src/adapters/asaas/`.
+- `src/adapters/` — `asaas/` (fetch + `AsaasGateway`), `itau/` (auth mTLS, certificado; cobrança = `GatewayNotReady`), `odoo/` (JSON-2 `/json/2`), `db/` (pg), `fakes/` (Odoo e Asaas em memória pra testes).
 - `src/app/` — Hono (webhooks em `server.ts`, console em `console.ts`) + scheduler. `src/cli/` — migrate, job, demo. `public/` — SPA do console, sem build. `db/migrations/` — SQL puro, ordem numérica.
 - Read model do console: `src/core/console.ts` (interface) + `src/adapters/db/console.ts` (SQL). Ações: `src/core/usecases/console.ts`.
 - Spec-fonte: `~/w/salvei/propostas/SDC/02-SPEC.md` (v1.1). Contratos Odoo/Asaas estão lá, não aqui.
