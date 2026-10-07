@@ -4,12 +4,12 @@ Decisão do Dan (2026-10-07): **um gateway ativo por vez**. O motor não roda As
 
 ## Pré-condição: zero cobranças abertas no gateway atual
 Cobrança aberta no gateway que sai perde a baixa automática: os avisos dele caem em `error` e o reconcile
-deixa de consultá-lo. Por isso só se troca com **zero** cobranças abertas (`created` ou `confirmed`).
+deixa de consultá-lo. Por isso só se troca com **zero** cobranças abertas (`created`, `confirmed` ou em `exception`).
 
 Conferir no banco do motor:
 ```sql
-select status, count(*) from charges where status in ('created','confirmed') group by status;
--- tem que voltar vazio
+select status, count(*) from charges where status in ('created','confirmed','exception') group by status;
+-- tem que voltar vazio: 'exception' também conta — uma baixa pendente de decisão fica órfã depois da troca
 ```
 No console: o painel de saúde mostra as cobranças abertas — tem que estar em 0.
 Também conferir no painel do gateway que sai que não há boleto pendente emitido pelo motor.
