@@ -1,5 +1,6 @@
 // Agendador em processo: é o que roda no container. No Supabase, o cron do próprio Supabase chama os mesmos jobs.
-// Um job nunca sobrepõe a si mesmo; o diário roda uma vez por dia civil (persistido em RECONCILE_LAST, sobrevive a restart).
+// Um job nunca sobrepõe a si mesmo; o diário roda uma vez por dia civil (persistido em RECONCILE_LAST — ou em
+// RECONCILE_SKIPPED_LAST quando foi pulado por gateway que não emite —, sobrevive a restart).
 import type { Deps } from "../core/ports.js";
 import { AUDIT_RETENTION_DAYS, EVENT_RETENTION_DAYS } from "../core/limits.js";
 import { processAsaasEvents, processOdooEvents, reconcileDaily, syncInvoices, watchdog } from "../core/index.js";
@@ -82,7 +83,12 @@ export function startScheduler(deps: Deps, o: { setInterval?: typeof setInterval
     const now = deps.clock.now();
     if (now.getUTCHours() < DAILY_HOUR_UTC) return false;
     const last = await deps.repo.config.get<JobSummary>("RECONCILE_LAST").catch(() => null);
-    return !last?.ok || String(last.at).slice(0, 10) !== now.toISOString().slice(0, 10);
+    const hoje = now.toISOString().slice(0, 10);
+    if (last?.ok && String(last.at).slice(0, 10) === hoje) return false;
+    // Diário PULADO hoje (gateway que não emite) também conta como "já rodou": sem isto ele voltava a cada
+    // minuto, repetindo as purgas. O marcador é separado de RECONCILE_LAST para não mover a âncora da janela.
+    const pulado = await deps.repo.config.get<{ at?: string }>("RECONCILE_SKIPPED_LAST").catch(() => null);
+    return String(pulado?.at).slice(0, 10) !== hoje;
   };
   const tick = async () => { if (await dailyDue()) await run("reconcile-daily"); };
   const timers = [

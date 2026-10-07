@@ -30,8 +30,11 @@ export async function reconcileDaily(deps: Deps, o: { lookbackDays?: number } = 
   const s: ReconcileSummary = { at: deps.clock.now().toISOString(), ok: false, from, scanned: 0, received: 0, already: 0, unmatched: 0, divergent: 0, needsReview: 0, errors: 0, overdueChecked: 0, byCreditDate: 0 };
   // Gateway que não emite (Itaú até a Cobrança V2) não tem o que reconciliar: pula com o motivo e NÃO grava RECONCILE_LAST
   // (gravar ok=false zeraria a âncora do último sucesso; a janela precisa crescer até ele quando o gateway voltar).
+  // A "tentativa do dia" vai num marcador À PARTE (RECONCILE_SKIPPED_LAST): é ele que impede o scheduler de
+  // re-disparar o diário (e as purgas) a cada minuto, sem tocar na âncora da janela.
   if (!deps.gateway.canIssue) {
     s.skipped = `gateway ${deps.gateway.name} não emite cobrança — reconciliação pulada`;
+    await deps.repo.config.set("RECONCILE_SKIPPED_LAST", { at: s.at, skipped: s.skipped });
     deps.log("reconcile-daily", { ...s });
     return s;
   }

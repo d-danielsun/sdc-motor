@@ -28,4 +28,7 @@ Se houver abertas: esperar liquidarem/vencerem, ou cancelar no gateway e no moto
 - `sync-invoices` não varre e **não avança o watermark** (`SYNC_LAST.ok=false`, `gatewayCanIssue=false`):
   ao voltar para um gateway que emite, todas as faturas do período ainda são cobradas.
 - `reconcile-daily` pula com o motivo e não grava `RECONCILE_LAST`: a janela cresce até o último sucesso.
+  A tentativa do dia fica em `RECONCILE_SKIPPED_LAST`, então o diário (e as purgas) roda **uma vez por dia**,
+  não a cada minuto. Trocou para um gateway que emite no mesmo dia em que já houve o pulo? O diário só volta
+  sozinho no dia seguinte; para não esperar, `npm run job -- reconcile-daily`.
 - `watchdog` pula só a checagem da fila de avisos (`eventQueueSkipped`); silêncio e exceções travadas seguem alertando.
