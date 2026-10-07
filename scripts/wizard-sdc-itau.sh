@@ -208,7 +208,7 @@ banner "Itaú Cobrança V2 — certificado e credenciais da SDC"
 
 # ── 1 ─────────────────────────────────────────────────────────────────────
 stage "Agência e conta da SDC"
-say "Agência e conta que o Itaú vai usar na cobrança (o Josué/SDC confirma ao Caio)."
+say "Agência e conta que o Itaú vai usar na cobrança (a SDC confirma ao contato do Itaú)."
 note "Não são segredo; ficam em $ENV_FILE para os próximos passos."
 ask ITAU_AGENCIA "Agência (4 dígitos):"
 ask ITAU_CONTA "Conta com dígito (ex.: 12345-6):"
@@ -219,7 +219,7 @@ pause
 
 # ── 2 ─────────────────────────────────────────────────────────────────────
 stage "Par RSA (já gerado) — só conferir"
-say "O par RSA 2048 já foi gerado e a chave pública foi enviada ao Caio (email-caio-chave-publica.md)."
+say "O par RSA 2048 já foi gerado e a chave pública foi enviada ao contato do Itaú."
 say "Aqui só conferimos que a privada existe, é válida e corresponde à pública enviada."
 if [[ ! -f "$ITAU_WORKDIR/private.pem" || ! -f "$ITAU_WORKDIR/public.pem" ]]; then
   warn "não achei private.pem/public.pem em $ITAU_WORKDIR"
@@ -245,7 +245,7 @@ say "Por isso este wizard não roda nenhum comando de decifrar: use o comando qu
 say "em outro terminal, com a chave $ITAU_WORKDIR/private.pem. Exemplos COMUNS (confirme com o banco):"
 note "  openssl pkeyutl -decrypt -inkey private.pem -in arquivo.bin"
 note "  base64 -d texto.b64 | openssl pkeyutl -decrypt -inkey private.pem -pkeyopt rsa_padding_mode:oaep"
-say "Se não estiver claro, pergunte ao Caio (caio.moretti@itaubba.com) antes de tentar às cegas."
+say "Se não estiver claro, pergunte ao contato do Itaú antes de tentar às cegas."
 pause "Quando tiver o Client ID e o token temporário em mãos, Enter."
 ask ITAU_CLIENT_ID "Client ID:"
 if [[ -s "$RESPOSTA" ]]; then
@@ -286,7 +286,7 @@ if [[ -s "$RESPOSTA" ]]; then
 elif confirm "Enviar a solicitação agora?"; then
   # token por variável de ambiente local ao comando → stdin do curl (nunca em argv); gravação atômica, nunca sobrescreve
   ITAU_TOKEN_TEMPORARIO="$ITAU_TOKEN_TEMPORARIO" "$SCRIPT_DIR/itau-sts.sh" solicitar "$ITAU_STS" "$CSR" "$RESPOSTA" \
-    || { warn "o banco recusou; veja $RESPOSTA.recusa-* e fale com o Caio antes de tentar de novo"; exit 1; }
+    || { warn "o banco recusou; veja $RESPOSTA.recusa-* e fale com o contato do Itaú antes de tentar de novo"; exit 1; }
   ITAU_TOKEN_TEMPORARIO=""
 else
   SKIPPED+=("solicitação do certificado (rode o wizard de novo)")
