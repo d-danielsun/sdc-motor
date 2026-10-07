@@ -11,6 +11,8 @@ export interface ReconcileSummary {
   unmatched: number; divergent: number; needsReview: number; errors: number; overdueChecked: number;
   /** Quantos vieram só pelo passe de data de CRÉDITO — o que a janela de pagamento perdia. */
   byCreditDate: number;
+  /** Motivo de a reconciliação ter sido pulada (gateway que não emite, ex.: Itaú). */
+  skipped?: string;
 }
 
 export function daysAgo(today: string, days: number): string {
@@ -26,6 +28,13 @@ export async function reconcileDaily(deps: Deps, o: { lookbackDays?: number } = 
   const anchor = last?.ok && last.at && last.at.slice(0, 10) < today ? last.at.slice(0, 10) : today;   // motor parado > janela: a janela cresce até o último sucesso
   const from = daysAgo(anchor, lookback);
   const s: ReconcileSummary = { at: deps.clock.now().toISOString(), ok: false, from, scanned: 0, received: 0, already: 0, unmatched: 0, divergent: 0, needsReview: 0, errors: 0, overdueChecked: 0, byCreditDate: 0 };
+  // Gateway que não emite (Itaú até a Cobrança V2) não tem o que reconciliar: pula com o motivo e NÃO grava RECONCILE_LAST
+  // (gravar ok=false zeraria a âncora do último sucesso; a janela precisa crescer até ele quando o gateway voltar).
+  if (!deps.gateway.canIssue) {
+    s.skipped = `gateway ${deps.gateway.name} não emite cobrança — reconciliação pulada`;
+    deps.log("reconcile-daily", { ...s });
+    return s;
+  }
   const contabiliza = (r: string) => {
     if (r === "received") s.received++;
     else if (r === "already") s.already++;

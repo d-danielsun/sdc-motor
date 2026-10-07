@@ -3,7 +3,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { ItauClient } from "../../src/adapters/itau/config.js";
 import { ItauGateway } from "../../src/adapters/itau/gateway.js";
-import { processAsaasEvents, setConsoleConfig, syncInvoices } from "../../src/core/index.js";
+import { processAsaasEvents, reconcileDaily, setConsoleConfig, syncInvoices, watchdog } from "../../src/core/index.js";
 import { dbReachable, seedInvoice, world, type World } from "../helpers.js";
 import { gerarPki, type Pki } from "../itau-fixtures.js";
 
@@ -106,5 +106,25 @@ describe("probes do gateway (porta neutra)", () => {
     expect((await syncInvoices(itau.deps)).created).toBe(0);
     expect(itau.rede.chamadas).toBe(0);
     expect((await w.pool.query("select count(*)::int as n from charges")).rows[0].n).toBe(0);
+  });
+
+  it("R1: watchdog com Itaú e ASAAS_WEBHOOK_ID herdado → não lança, registra o motivo e mantém os outros alertas", async () => {
+    const w = await fresh();
+    await w.deps.repo.config.set("ASAAS_WEBHOOK_ID", "wh_legado");
+    const exc = await w.deps.repo.exceptions.openOnce({ type: "charge_create_failed", refTable: "account.move", refId: 1, detail: { reason: "teste" } });
+    await w.pool.query("update exceptions set created_at = $2 where id = $1", [exc.id, new Date(w.deps.clock.now().getTime() - 2 * 3_600_000)]);
+    const s = await watchdog(comItau(w).deps);
+    expect(s.eventQueueSkipped).toMatch(/aguardando/);
+    expect(s.travadas.charge_create_failed).toBe(1);
+  });
+
+  it("R1: reconcile com Itaú → não lança, registra o motivo e não estraga a âncora do último sucesso", async () => {
+    const w = await fresh();
+    const antes = { ok: true, at: "2026-01-01T00:00:00.000Z", from: "2025-12-29" };
+    await w.deps.repo.config.set("RECONCILE_LAST", antes);
+    const s = await reconcileDaily(comItau(w).deps);
+    expect(s).toMatchObject({ ok: false, scanned: 0 });
+    expect(s.skipped).toMatch(/não emite/);
+    expect(await w.deps.repo.config.get("RECONCILE_LAST")).toEqual(antes);
   });
 });
