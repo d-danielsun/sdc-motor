@@ -23,6 +23,7 @@ const KIND: Record<string, SettlementEventKind> = {
 
 export class AsaasGateway implements ChargeGateway {
   readonly name = "asaas";
+  readonly canIssue = true;
   constructor(readonly client: AsaasClient) {}
 
   findCustomerByExternalRef(ref: string): Promise<GatewayCustomer | null> { return this.client.findCustomerByExternalRef(ref); }

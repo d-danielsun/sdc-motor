@@ -30,6 +30,7 @@ if (name === "register-asaas-webhook") {
   const url = process.env.WEBHOOK_PUBLIC_URL, email = process.env.ALERT_EMAIL;
   if (!url || !email) { console.error("uso: WEBHOOK_PUBLIC_URL=https://…/webhook-asaas ALERT_EMAIL=… npm run job -- register-asaas-webhook"); exitCode = 2; }
   else {
+    if (!asaas) throw new Error("register-asaas-webhook exige GATEWAY=asaas");
     const existing = await deps.repo.config.get<string | null>("ASAAS_WEBHOOK_ID");
     if (existing && (await asaas.getWebhook(existing))) jsonLog("webhook já registrado", { id: existing });
     else {

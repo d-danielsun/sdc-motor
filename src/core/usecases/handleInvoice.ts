@@ -48,6 +48,7 @@ async function handleLocked(deps: Deps, inv: OdooInvoice, out: InvoiceOutcome): 
   const idaEnabled = (await repo.config.get<boolean>("IDA_ENABLED")) === true;
   const cutoff = await repo.config.get<string | null>("GO_LIVE_CUTOFF_DATE");
   if (!idaEnabled || !cutoff || (inv.invoiceDate && inv.invoiceDate < cutoff)) { out.skipped++; return; }   // sem data de corte, nada é emitido (fail closed)
+  if (!deps.gateway.canIssue) { out.skipped++; return; }   // gateway sem emissão real (Itaú até a Cobrança V2)
 
   const openLines = allLines.filter((l) => !l.reconciled);
   let customerId: string | null | undefined;   // resolvido uma vez por fatura

@@ -203,6 +203,9 @@ export async function setConsoleConfig(deps: Deps, key: string, value: unknown):
   // Ligar a ida sem data de corte emitiria boleto pro histórico inteiro do Odoo na primeira varredura (red team).
   if (k === "IDA_ENABLED" && value === true && !(await deps.repo.config.get<string | null>("GO_LIVE_CUTOFF_DATE"))) return fail("invalid_state", "defina GO_LIVE_CUTOFF_DATE antes de ligar IDA_ENABLED");
   if (k === "GO_LIVE_CUTOFF_DATE" && value === null && (await deps.repo.config.get<boolean>("IDA_ENABLED")) === true) return fail("invalid_state", "desligue IDA_ENABLED antes de remover a data de corte");
+  // Gateway sem emissão real (Itaú até a Cobrança V2): ligar a ida não teria o que emitir.
+  const ligaIda = k === "IDA_ENABLED" && value !== false;
+  if (ligaIda && !deps.gateway.canIssue) return fail("invalid_state", `o gateway ${deps.gateway.name} ainda não emite cobrança (aguardando Cobrança V2) — a ida não pode ser ligada`);
   await deps.repo.config.set(k, k === "TOLERANCE_BRL" ? String(value) : value);
   return { ok: true, action: "config_set", detail: { key: k, value } };
 }

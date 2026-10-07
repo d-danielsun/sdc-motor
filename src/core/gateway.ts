@@ -76,6 +76,8 @@ export interface GatewayEventQueue {
 export interface ChargeGateway {
   /** Prefixo do memo de baixa no Odoo: `<name>:<id da cobrança>` (Asaas: `asaas:<pay_id>`, formato existente). */
   readonly name: string;
+  /** false = gateway sem emissão real ainda (Itaú até a Cobrança V2): a ida não pode ser ligada. */
+  readonly canIssue: boolean;
 
   findCustomerByExternalRef(ref: string): Promise<GatewayCustomer | null>;
   /** Cliente que já existia no gateway sem a nossa referência: adotar em vez de duplicar. */
@@ -94,7 +96,8 @@ export interface ChargeGateway {
   /** Cobranças por status e janela (`paymentDateFrom` = pagamento; `creditDateFrom` = previsão de crédito). */
   listCharges(f: { status?: string; paymentDateFrom?: string; creditDateFrom?: string; externalReference?: string }): AsyncIterable<GatewayCharge>;
 
-  /** Traduz o payload GUARDADO de um aviso. Nunca lança: payload estranho → null (ignorado). */
+  /** Traduz o payload GUARDADO de um aviso. Payload estranho → null (ignorado). Adaptador que ainda não
+   *  conhece o formato do aviso lança GatewayNotReady (o worker deixa o evento em erro, visível). */
   parseSettlementEvent(payload: unknown): SettlementEvent | null;
   getEventQueue(id: string): Promise<GatewayEventQueue | null>;
   /** Pede ao gateway para retomar a fila de avisos interrompida. */
