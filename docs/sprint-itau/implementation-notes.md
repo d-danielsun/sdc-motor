@@ -110,3 +110,31 @@ Cada item com teste vermelho antes da correção (visto falhar, depois passar).
   reconcile: gateway que não emite → `skipped` com motivo, sem gravar `RECONCILE_LAST` (preserva a âncora).
 - **R3** runbook `docs/sprint-itau/runbook-trocar-gateway.md`; decisão "um gateway por vez" na spec (Decisões).
 - Pendentes: R5 (harness proibido de editar), R6 (S0.1 Odoo real — proibido chamar serviço real).
+
+## Follow-ups do QA (N3, N4, N5, R5) — 2026-10-07, branch `fix/itau-followups`
+Cada item com teste vermelho antes da correção (visto falhar, depois passar).
+- **N3** marcador separado `RECONCILE_SKIPPED_LAST` (`{ at, skipped }` em `app_config`), gravado por
+  `reconcileDaily` só quando pula por gateway que não emite. O scheduler considera o diário feito no dia se
+  `RECONCILE_LAST` foi ok hoje **ou** se o marcador é de hoje. `RECONCILE_LAST` não é tocado: a janela segue
+  crescendo até o último sucesso real. Escolhida por ser a forma mais simples: sem migration (a chave nasce no
+  upsert) e sem mudar o formato da âncora. Falha de verdade (exceção no job) continua sendo re-tentada a cada
+  minuto, como antes. Efeito colateral aceito: trocar para um gateway que emite no MESMO dia de um pulo deixa o
+  diário automático para o dia seguinte (o runbook manda rodar `npm run job -- reconcile-daily`).
+  Teste: `test/db/gateway-probes.test.ts` (N3) — 3 ticks → 1 rodada e 1 purga; dia seguinte → mais 1; âncora igual.
+- **N4** lista de PERMISSÃO `COMANDOS_SO_BANCO = ["console-user"]` em `src/app/wiring.ts`; `job.ts` só pula
+  `assertGatewayBoot` para ela. Jobs, `register-asaas-webhook` e nome desconhecido continuam barrados (nega por
+  padrão). A mensagem passa a trazer o SQL exato (`SQL_DESLIGAR_IDA`) em vez de "desligue no console". Não foi
+  criado comando novo para desligar a ida: o SQL basta e não abre superfície. Teste: o CLI real em subprocesso
+  contra o Postgres de teste (`N4 — npm run job …`), que também aplica o SQL da mensagem e confere que funciona.
+- **N5** `scripts/itau-sts.sh emitido <cert> <key>` → `local` (certificado legível que corresponde à chave no
+  disco) ou `1password` (há sessão `op` e os itens "Itaú SDC - certificado" e "… chave do certificado" existem).
+  Com `local` o wizard não pede o token, não oferece o POST, não regera chave/CSR e não duplica os itens no
+  1Password; com `1password` para com os dois `op document get … --out-file` exatos. Client Secret perdido =
+  falar com o banco (token novo), e o wizard diz isso. Sem nenhuma das provas o fluxo é o de antes. Biblioteca
+  acima do marcador STAGES intocada (todos os hunks abaixo da linha 248). Teste: o wizard inteiro por stdin, com
+  `curl` e `op` falsos (`test/unit/wizard-itau.test.ts`, bloco N5).
+  Limite conhecido: resposta apagada SEM o certificado ter sido salvo em lugar nenhum não é detectável — o
+  wizard pede o token e o banco recusa (a recusa é guardada em `<resposta>.recusa-<ts>`).
+- **R5** `score.sh` guarda o exit do vitest e trata como hard-fail exit ≠ 0 e JSON não parseável (antes o JSON
+  ilegível virava "testes vermelhos (1)" por acidente e o exit era ignorado). Teste:
+  `test/unit/harness-score.test.ts`, com `npm`/`npx` falsos no PATH (o score real não roda dentro da suíte).

@@ -38,12 +38,12 @@ Diff `origin/main..HEAD` até `41f8b6c`: 56 arquivos, +2191/−174. Backend, sem
 | R2 promise pendente no transporte | CORRIGIDO |
 | R3 runbook de troca | **CORRIGIDO**, agora com o N2 incluído |
 | R4 segredos em argv | CORRIGIDO |
-| R5 `score.sh` ignora o exit do vitest | ABERTO por regra (harness proibido). O codex reapontou. Mitigado: exit do `npm test` conferido à parte, deu 0 |
+| R5 `score.sh` ignora o exit do vitest | **CORRIGIDO** em `fix/itau-followups` (ver implementation-notes) |
 | R6 S0.1 Odoo somente-leitura | ABERTO por regra, fora da sprint |
 | N2 runbook ignora `exception` | **CORRIGIDO** em `41f8b6c` |
-| N3 reconcile-daily roda a cada minuto com Itaú | ABERTO, P2 aceito como follow-up |
-| N4 job.ts recusa `console-user` com Itaú e ida ligada | ABERTO, P2 aceito como follow-up |
-| N5 wizard pede o token já consumido se a resposta for apagada | ABERTO, P2 aceito como follow-up |
+| N3 reconcile-daily roda a cada minuto com Itaú | **CORRIGIDO** em `fix/itau-followups` |
+| N4 job.ts recusa `console-user` com Itaú e ida ligada | **CORRIGIDO** em `fix/itau-followups` |
+| N5 wizard pede o token já consumido se a resposta for apagada | **CORRIGIDO** em `fix/itau-followups` |
 
 ## Achados novos
 Nenhum. O codex e a revisão manual não acharam nada fora de N3, N4, N5 e R5. O commit de correção mexe só em `.gitignore`, no runbook e na remoção do link, então não há superfície nova de código.
