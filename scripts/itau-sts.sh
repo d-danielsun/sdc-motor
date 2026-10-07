@@ -5,6 +5,7 @@
 #
 #   ITAU_TOKEN_TEMPORARIO=… itau-sts.sh solicitar <sts> <csr> <arquivo-resposta>
 #   ITAU_CLIENT_ID=… ITAU_CLIENT_SECRET=… itau-sts.sh token <sts> <cert> <key> <arquivo-corpo>   (imprime o HTTP status)
+#   itau-sts.sh emitido <cert> <key>   (imprime onde está a prova de que o certificado JÁ foi emitido: local | 1password; sai 1 se não há)
 set -euo pipefail
 umask 077
 
@@ -43,5 +44,22 @@ case "${1:-}" in
           --cert "$cert" --key "$key" -H 'Content-Type: application/x-www-form-urlencoded' \
           --data-urlencode 'grant_type=client_credentials' || echo "erro"
     ;;
-  *) echo "uso: itau-sts.sh solicitar|token …" >&2; exit 2 ;;
+  emitido)
+    # N5: a resposta da solicitação pode ter sido apagada (o próprio wizard oferece) DEPOIS de o certificado ser salvo.
+    # O token temporário já foi consumido nessa emissão: quem chama não deve pedi-lo de novo nem refazer o POST.
+    # Não faz rede com o banco; só lê o disco e, se houver sessão, pergunta ao 1Password se os itens existem.
+    cert=$2 key=$3
+    if [[ -s "$cert" && -s "$key" ]]; then
+      pub=$(openssl x509 -in "$cert" -noout -pubkey 2>/dev/null) || pub=""
+      # certificado legível E da chave que está ao lado: sem as duas coisas não é prova de emissão
+      if [[ -n "$pub" && "$pub" == "$(openssl pkey -in "$key" -pubout 2>/dev/null)" ]]; then echo local; exit 0; fi
+    fi
+    if command -v op >/dev/null 2>&1 && op whoami >/dev/null 2>&1 \
+       && op item get "Itaú SDC - certificado" >/dev/null 2>&1 \
+       && op item get "Itaú SDC - chave do certificado" >/dev/null 2>&1; then
+      echo 1password; exit 0
+    fi
+    exit 1
+    ;;
+  *) echo "uso: itau-sts.sh solicitar|token|emitido …" >&2; exit 2 ;;
 esac
