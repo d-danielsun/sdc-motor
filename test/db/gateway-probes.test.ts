@@ -77,6 +77,15 @@ describe("probes do gateway (porta neutra)", () => {
     expect(itau.rede.chamadas).toBe(0);
     expect((await w.pool.query("select count(*)::int as n from charges")).rows[0].n).toBe(0);
     expect((await w.pool.query("select count(*)::int as n from exceptions")).rows[0].n).toBe(0);
+    expect(s).toMatchObject({ gatewayCanIssue: false, invoices: 0 });
+    expect(await w.deps.repo.watermarks.get("invoices")).toBeNull();   // BLOQ-1: o watermark não anda
+  });
+
+  it("BLOQ-1: sync com Itaú (ida ligada) não pode consumir o watermark — ao voltar ao Asaas a fatura é cobrada", async () => {
+    const w = await fresh(); seedInvoice(w);
+    await syncInvoices(comItau(w).deps);
+    await syncInvoices(w.deps);   // volta ao Asaas
+    expect((await w.pool.query("select count(*)::int as n from charges")).rows[0].n).toBeGreaterThan(0);
   });
 
   it("P3: o console não liga a ida com o Itaú (sem emissão real); com o Asaas liga", async () => {
