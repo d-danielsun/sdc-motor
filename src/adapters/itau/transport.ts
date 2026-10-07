@@ -25,10 +25,15 @@ function request(agent: https.Agent, timeoutMs: number): ItauTransport {
       let data = "";
       res.setEncoding("utf8");
       res.on("data", (c: string) => (data += c));
-      res.on("end", () => resolve({ status: res.statusCode ?? 0, body: data, headers: res.headers }));
+      res.on("end", () => { if (res.complete) resolve({ status: res.statusCode ?? 0, body: data, headers: res.headers }); else fail(new Error("Itaú: conexão caiu no meio da resposta")); });
+      // conexão que cai depois dos headers: sem isto a promise ficaria pendente para sempre (e travaria o inflight do token)
+      res.on("aborted", () => fail(new Error("Itaú: resposta abortada")));
+      res.on("error", (e) => fail(e));
+      res.on("close", () => { if (!res.complete) fail(new Error("Itaú: conexão fechada no meio da resposta")); });
     });
+    const fail = (e: Error) => reject(Object.assign(e, { transient: true }));   // reject repetido é no-op
     req.on("timeout", () => req.destroy(Object.assign(new Error("Itaú: timeout"), { transient: true })));
-    req.on("error", (e) => reject(Object.assign(e, { transient: true })));
+    req.on("error", (e) => fail(e));
     if (body !== undefined) req.write(body);
     req.end();
   });
