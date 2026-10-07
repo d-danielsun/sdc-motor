@@ -1,6 +1,6 @@
 {
   "name": "sdc-motor",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Motor de cobran\u00e7a Odoo \u2194 Asaas da SDC (Salvei) \u2014 n\u00facleo port\u00e1til, roda em Supabase hoje e em container amanh\u00e3",
   "type": "module",
