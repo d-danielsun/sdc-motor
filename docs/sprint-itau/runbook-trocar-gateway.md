@@ -21,6 +21,13 @@ Se houver abertas: esperar liquidarem/vencerem, ou cancelar no gateway e no moto
 2. Rodar a consulta acima → vazio.
 3. Trocar `GATEWAY` no ambiente e reiniciar servidor e jobs. O boot (`main.ts` e `npm run job`) recusa subir
    com um gateway que não emite e a ida ligada.
+   Ficou preso nessa recusa (trocou o `GATEWAY` antes de desligar a ida)? O console não sobe para desligá-la.
+   Desligue direto no banco do motor e suba de novo:
+   ```sql
+   update app_config set value = 'false'::jsonb, updated_at = now() where key = 'IDA_ENABLED';
+   ```
+   `npm run job -- console-user …` não passa por essa recusa (só mexe no banco); os jobs e
+   `register-asaas-webhook` continuam barrados.
 4. Gateway que emite: religar a ida no console. Gateway que ainda não emite (Itaú até a Cobrança V2): a ida
    fica desligada.
 

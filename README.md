@@ -56,7 +56,7 @@ pronto para trocar de gateway **sem inventar o que o banco não disse**:
 
 | Env | O quê |
 |---|---|
-| `GATEWAY` | `asaas` (default) ou `itau`. `itau` com a ida ligada (env ou `app_config`) **recusa subir**; o console também não liga a ida com gateway sem emissão |
+| `GATEWAY` | `asaas` (default) ou `itau`. `itau` com a ida ligada (env ou `app_config`) **recusa subir** (servidor e jobs; `console-user`, que só mexe no banco, roda) e a mensagem traz o SQL que desliga a ida; o console também não liga a ida com gateway sem emissão |
 | `ITAU_CLIENT_ID` / `ITAU_CLIENT_SECRET` | credenciais do STS |
 | `ITAU_CERT_PEM`\|`ITAU_CERT_FILE`, `ITAU_KEY_PEM`\|`ITAU_KEY_FILE` | certificado e chave; sem eles o cliente não constrói (nunca chama sem mTLS) |
 | `ITAU_TOKEN_URL` | default `https://sts.itau.com.br/api/oauth/token` |

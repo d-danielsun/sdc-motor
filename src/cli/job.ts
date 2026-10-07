@@ -4,7 +4,7 @@ import { createAuthStore } from "../adapters/db/auth.js";
 import { assertLeitura, assertMigrated } from "../adapters/db/migrations.js";
 import { SenhaInvalida, assertSenhaAceitavel, gerarSenha, hashPassword, isEmail, normalizeEmail } from "../core/auth.js";
 import { JOBS, runJob, type JobName } from "../app/scheduler.js";
-import { assertGatewayBoot, buildDeps, jsonLog, readEnv } from "../app/wiring.js";
+import { assertGatewayBoot, buildDeps, exigeGatewayBoot, jsonLog, readEnv } from "../app/wiring.js";
 
 /** --chave valor | --flag → { chave: valor, flag: "" } */
 function flags(argv: string[]): Record<string, string> {
@@ -23,7 +23,9 @@ const env = readEnv();
 const { deps, asaas, pool, close } = buildDeps(env);
 await assertMigrated(pool).catch((e) => { console.error(String((e as Error).message)); process.exit(1); });
 await assertLeitura(pool).catch((e) => { console.error(String((e as Error).message)); process.exit(1); });
-await assertGatewayBoot(deps.gateway, deps.repo).catch((e) => { console.error(String((e as Error).message)); process.exit(1); });   // mesma checagem de boot do main.ts
+// Mesma checagem de boot do main.ts — menos para comando que só mexe no banco (console-user): ele não fala com
+// gateway nem emite, e barrá-lo deixava o operador sem como administrar o acesso (N4).
+if (exigeGatewayBoot(name)) await assertGatewayBoot(deps.gateway, deps.repo).catch((e) => { console.error(String((e as Error).message)); process.exit(1); });
 
 let exitCode = 0;
 if (name === "register-asaas-webhook") {
