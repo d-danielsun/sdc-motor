@@ -1,10 +1,13 @@
 // Probes P1–P4 do pivô Itaú, rodando PELA PORTA neutra (deps.gateway), contra Postgres real.
 // P1/P2 com o Asaas atrás da porta; P3/P4 nos dois gateways (Asaas e Itaú stub).
+import { spawnSync } from "node:child_process";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { ItauClient } from "../../src/adapters/itau/config.js";
 import { ItauGateway } from "../../src/adapters/itau/gateway.js";
+import { fixedClock } from "../../src/adapters/clock.js";
+import { runJob, startScheduler, type JobRunner } from "../../src/app/scheduler.js";
 import { processAsaasEvents, reconcileDaily, setConsoleConfig, syncInvoices, watchdog } from "../../src/core/index.js";
-import { dbReachable, seedInvoice, world, type World } from "../helpers.js";
+import { DB_URL, USUARIO, dbReachable, seedInvoice, world, type World } from "../helpers.js";
 import { gerarPki, type Pki } from "../itau-fixtures.js";
 
 const opened: World[] = [];
@@ -126,5 +129,69 @@ describe("probes do gateway (porta neutra)", () => {
     expect(s).toMatchObject({ ok: false, scanned: 0 });
     expect(s.skipped).toMatch(/não emite/);
     expect(await w.deps.repo.config.get("RECONCILE_LAST")).toEqual(antes);
+  });
+  it("N3: reconcile-daily com gateway que não emite roda no máximo 1x por dia e não move a âncora da janela", async () => {
+    const w = await fresh();   // relógio 13:00Z: já passou das 06:00 BRT
+    const antes = { ok: true, at: "2026-09-01T09:00:00.000Z", from: "2026-08-29" };
+    await w.deps.repo.config.set("RECONCILE_LAST", antes);
+    const itau = comItau(w);
+    let rodadas = 0, purgas = 0;
+    const agendar = (deps: World["deps"]) => {
+      const runner: JobRunner = {
+        run: async (n) => { if (n !== "reconcile-daily") return null; rodadas++; return runJob(deps, n, { purgarSessoes: async () => { purgas++; return 0; } }); },
+        inFlight: () => [], isJob: (n): n is never => false,
+      };
+      return startScheduler(deps, { setInterval: (() => 0) as unknown as typeof setInterval, clearInterval: (() => {}) as typeof clearInterval, runner });
+    };
+    const hoje = agendar(itau.deps);
+    for (let i = 0; i < 3; i++) await hoje.tick();   // três minutos seguidos depois das 06:00
+    expect(rodadas).toBe(1);
+    expect(purgas).toBe(1);
+    expect(await w.deps.repo.config.get("RECONCILE_LAST")).toEqual(antes);   // a âncora do último sucesso real fica onde estava
+
+    const amanha = agendar({ ...itau.deps, clock: fixedClock("2026-09-11T13:00:00.000Z") });
+    for (let i = 0; i < 2; i++) await amanha.tick();
+    expect(rodadas).toBe(2);   // dia novo: roda de novo, uma vez
+    expect(await w.deps.repo.config.get("RECONCILE_LAST")).toEqual(antes);
+
+    // Volta a um gateway que emite: a janela ainda parte do último sucesso REAL (01/09 − 3 dias), não do dia pulado.
+    const s = await reconcileDaily({ ...w.deps, clock: fixedClock("2026-09-12T13:00:00.000Z") });
+    expect(s).toMatchObject({ ok: true, from: "2026-08-29" });
+  });
+});
+
+// N4: o CLI de verdade (src/cli/job.ts), em subprocesso, com GATEWAY=itau e a ida LIGADA em app_config.
+describe("N4 — npm run job com gateway que não emite e a ida ligada", () => {
+  const job = (...args: string[]) => spawnSync("node_modules/.bin/tsx", ["src/cli/job.ts", ...args], {
+    encoding: "utf8", timeout: 25_000,
+    env: {
+      PATH: process.env.PATH, HOME: process.env.HOME, DATABASE_URL: DB_URL, GATEWAY: "itau",
+      ITAU_CLIENT_ID: "cid", ITAU_CLIENT_SECRET: "s", ITAU_CERT_PEM: pki.clientCert, ITAU_KEY_PEM: pki.clientKey, ITAU_TOKEN_URL: "https://127.0.0.1:1/t",
+      ASAAS_WEBHOOK_TOKEN: "t".repeat(32), ODOO_WEBHOOK_KEY: "k".repeat(32),
+    },
+  });
+
+  it("console-user (só banco) roda: é por ele que se administra o acesso com o motor barrado", async () => {
+    await fresh();   // ida ligada no banco
+    const r = job("console-user", "--list");
+    expect(r.stderr).not.toMatch(/ida está ligada/);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain(USUARIO.email);
+  });
+
+  it.each(["sync-invoices", "reconcile-daily", "watchdog", "worker", "register-asaas-webhook", "comando-que-nao-existe"])("%s continua barrado, e a mensagem dá um caminho que funciona", async (nome) => {
+    const w = await fresh();
+    const r = job(nome);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/ida está ligada/);
+    expect(r.stdout).not.toMatch(/"msg":"job /);   // nenhum job chegou a rodar
+    expect(await w.deps.repo.config.get("SYNC_LAST")).toBeNull();
+    // O caminho indicado é SQL exato, e funciona: aplicado, o mesmo comando deixa de ser barrado pela ida.
+    const sql = /update app_config set [^;]+;/.exec(r.stderr)?.[0];
+    expect(sql).toBeTruthy();
+    expect(r.stderr).not.toMatch(/desligue a ida no console antes/);   // o console também não sobe: não é saída
+    await w.pool.query(sql!);
+    expect(await w.deps.repo.config.get("IDA_ENABLED")).toBe(false);
+    expect(job(nome).stderr).not.toMatch(/ida está ligada/);
   });
 });

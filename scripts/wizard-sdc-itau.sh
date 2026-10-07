@@ -248,8 +248,26 @@ note "  base64 -d texto.b64 | openssl pkeyutl -decrypt -inkey private.pem -pkeyo
 say "Se não estiver claro, pergunte ao contato do Itaú antes de tentar às cegas."
 pause "Quando tiver o Client ID e o token temporário em mãos, Enter."
 ask ITAU_CLIENT_ID "Client ID:"
+# A resposta pode ter sido apagada (o estágio 6 oferece) depois de o certificado ser salvo. Aí o token temporário
+# já foi consumido: pedir de novo e refazer o POST só renderia uma recusa do banco. EMITIDO = local | 1password | "".
+EMITIDO=""
+[[ -s "$RESPOSTA" ]] || EMITIDO=$("$SCRIPT_DIR/itau-sts.sh" emitido "$CERT" "$CERT_KEY") || EMITIDO=""
 if [[ -s "$RESPOSTA" ]]; then
   note "Já existe resposta da solicitação em $RESPOSTA — o token temporário não é mais necessário."
+  ITAU_TOKEN_TEMPORARIO=""
+elif [[ "$EMITIDO" == "1password" ]]; then
+  say "O certificado já foi emitido: certificado e chave estão no 1Password, mas não em $ITAU_WORKDIR."
+  say "O token temporário foi consumido nessa emissão — não peço de novo nem refaço a solicitação."
+  say "Traga os dois arquivos de volta e rode o wizard outra vez:"
+  note "  op document get \"Itaú SDC - certificado\" --out-file \"$CERT\""
+  note "  op document get \"Itaú SDC - chave do certificado\" --out-file \"$CERT_KEY\""
+  note "Se esses itens são de uma emissão antiga que não vale mais, só o banco resolve: peça ao contato do Itaú um"
+  note "token temporário NOVO e renomeie os itens no 1Password antes de rodar de novo."
+  exit 1
+elif [[ "$EMITIDO" == "local" ]]; then
+  say "${GREEN}✓${RESET} o certificado já foi emitido: $CERT corresponde à chave $CERT_KEY."
+  note "A resposta da solicitação não está mais em $RESPOSTA, mas o token temporário foi consumido nessa emissão:"
+  note "não peço de novo nem refaço a solicitação. Sigo com o certificado que já existe."
   ITAU_TOKEN_TEMPORARIO=""
 else
   ask_secret ITAU_TOKEN_TEMPORARIO "Token temporário (não aparece na tela):"
@@ -264,7 +282,9 @@ pause
 stage "Gerar o CSR do certificado"
 say "Chave NOVA do certificado (diferente do par RSA do e-mail) e o pedido de certificado (CSR)."
 note "Subject: /CN=$ITAU_CLIENT_ID/OU=SDC/L=SAO PAULO/ST=SP/C=BR"
-if [[ -f "$CSR" || -f "$CERT_KEY" ]] && ! confirm "Já existe CSR/chave em $ITAU_WORKDIR. Sobrescrever?"; then
+if [[ "$EMITIDO" == "local" ]]; then
+  say "Certificado já emitido para $CERT_KEY — mantive a chave (gerar outra inutilizaria o certificado)."
+elif [[ -f "$CSR" || -f "$CERT_KEY" ]] && ! confirm "Já existe CSR/chave em $ITAU_WORKDIR. Sobrescrever?"; then
   say "Mantive os arquivos existentes."
 else
   openssl req -new -newkey rsa:2048 -nodes -sha512 \
@@ -273,7 +293,8 @@ else
   chmod 600 "$CERT_KEY" "$CSR"
   say "${GREEN}✓${RESET} gerados $CSR e $CERT_KEY"
 fi
-if openssl req -in "$CSR" -noout -verify >/dev/null 2>&1; then say "${GREEN}✓${RESET} CSR íntegro"; else warn "CSR inválido"; exit 1; fi
+if [[ "$EMITIDO" == "local" ]]; then :   # o CSR já cumpriu o papel dele; pode nem existir mais
+elif openssl req -in "$CSR" -noout -verify >/dev/null 2>&1; then say "${GREEN}✓${RESET} CSR íntegro"; else warn "CSR inválido"; exit 1; fi
 pause
 
 # ── 5 ─────────────────────────────────────────────────────────────────────
@@ -281,7 +302,12 @@ stage "Solicitar o certificado ao Itaú"
 say "POST $ITAU_STS/seguranca/v1/certificado/solicitacao (text/plain, Bearer = token temporário)."
 warn "O token temporário costuma ser de USO ÚNICO e a resposta traz o Client Secret UMA vez só."
 note "A resposta é gravada em $RESPOSTA (permissão 600) para você copiar o certificado e o secret."
-if [[ -s "$RESPOSTA" ]]; then
+if [[ "$EMITIDO" == "local" ]]; then
+  say "${GREEN}✓${RESET} certificado já emitido — NÃO reenvio a solicitação (o token temporário já foi consumido)"
+  note "O Client Secret veio uma única vez, naquela resposta. Se você o guardou, está no 1Password"
+  note "(item 'Itaú SDC - Client Secret'). Se foi perdido, só o banco resolve: peça ao contato do Itaú um token"
+  note "temporário NOVO, tire $CERT do caminho (mv \"$CERT\" \"$CERT.antigo\") e rode o wizard de novo."
+elif [[ -s "$RESPOSTA" ]]; then
   say "${GREEN}✓${RESET} resposta já obtida em $RESPOSTA — NÃO reenvio a solicitação (o secret viria só uma vez)"
 elif confirm "Enviar a solicitação agora?"; then
   # token por variável de ambiente local ao comando → stdin do curl (nunca em argv); gravação atômica, nunca sobrescreve
@@ -292,10 +318,12 @@ else
   SKIPPED+=("solicitação do certificado (rode o wizard de novo)")
   finish; exit 0
 fi
-say "Abra $RESPOSTA. O formato da resposta não é interpretado por este wizard:"
-step "copie o bloco BEGIN/END CERTIFICATE para $CERT"
-step "copie o Client Secret (aparece uma única vez)"
-pause "Quando $CERT estiver salvo, Enter."
+if [[ "$EMITIDO" != "local" ]]; then
+  say "Abra $RESPOSTA. O formato da resposta não é interpretado por este wizard:"
+  step "copie o bloco BEGIN/END CERTIFICATE para $CERT"
+  step "copie o Client Secret (aparece uma única vez)"
+  pause "Quando $CERT estiver salvo, Enter."
+fi
 if [[ ! -f "$CERT" ]] || ! openssl x509 -in "$CERT" -noout >/dev/null 2>&1; then warn "$CERT ausente ou ilegível"; exit 1; fi
 chmod 600 "$CERT"
 if diff <(openssl x509 -in "$CERT" -noout -pubkey) <(openssl pkey -in "$CERT_KEY" -pubout) >/dev/null; then
@@ -314,6 +342,8 @@ say "Client Secret, chave e certificado vão para o 1Password (cofre padrão da 
 if ! command -v op >/dev/null 2>&1 || ! op whoami >/dev/null 2>&1; then
   warn "op CLI ausente ou sem sessão — rode \`eval \$(op signin)\` e repita este estágio, ou guarde à mão."
   SKIPPED+=("1Password: Client Secret, $CERT_KEY e $CERT")
+elif [[ "$EMITIDO" == "local" ]] && op item get "Itaú SDC - certificado" >/dev/null 2>&1; then
+  say "${GREEN}✓${RESET} os itens 'Itaú SDC - …' já estão no 1Password — não crio duplicata."
 elif confirm "Criar os itens 'Itaú SDC - …' no 1Password agora?"; then
   # o secret vai num template temporário (600) em vez de argv; apagado logo depois
   OP_TPL=$(mktemp)

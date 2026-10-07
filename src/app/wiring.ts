@@ -77,11 +77,25 @@ export function buildNotifier(env: Env, log = jsonLog): Notifier {
   return createResendNotifier({ apiKey: env.RESEND_API_KEY, from: env.ALERT_FROM, para: env.ALERT_EMAIL });
 }
 
+/** SQL exato que desliga a ida direto no banco. É o caminho que sobra quando o boot recusa: com a ida ligada
+ *  e um gateway que não emite, o servidor (e portanto o console) também não sobe. */
+export const SQL_DESLIGAR_IDA = "update app_config set value = 'false'::jsonb, updated_at = now() where key = 'IDA_ENABLED';";
+
+/** Comandos do `npm run job` que só mexem no banco: não falam com gateway nem emitem, então a recusa de boot do
+ *  gateway não se aplica (é por eles que se administra o acesso enquanto o motor está barrado).
+ *  Lista de PERMISSÃO: tudo o que não está aqui — inclusive nome desconhecido — passa pela recusa. */
+export const COMANDOS_SO_BANCO: readonly string[] = ["console-user"];
+export const exigeGatewayBoot = (comando: string | undefined): boolean => !COMANDOS_SO_BANCO.includes(comando ?? "");
+
 /** Boot com GATEWAY=itau e a ida ligada em app_config → recusa (não há emissão real ainda). */
 export async function assertGatewayBoot(gateway: ChargeGateway, repo: Pick<Repo, "config">): Promise<void> {
   if (gateway.canIssue) return;
   const ida = await repo.config.get<boolean>("IDA_ENABLED");
-  if (ida !== false && ida !== null) throw new Error(`GATEWAY=${gateway.name} não emite cobrança ainda (aguardando Cobrança V2) e a ida está ligada em app_config — desligue a ida no console antes de subir com este gateway`);
+  if (ida !== false && ida !== null) throw new Error(
+    `GATEWAY=${gateway.name} não emite cobrança ainda (aguardando Cobrança V2) e a ida está ligada em app_config. `
+    + `Com a ida ligada o servidor também não sobe, então o console não serve para desligá-la. Desligue direto no banco do motor:\n\n`
+    + `    psql "$DATABASE_URL" -c "${SQL_DESLIGAR_IDA}"\n\n`
+    + `(ou cole o SQL no editor do banco) e suba de novo. \`npm run job -- console-user\` segue funcionando: só mexe no banco.`);
 }
 
 export function buildGateway(env: Env, repo: Repo): { gateway: ChargeGateway; asaas: AsaasHttpClient | null } {
