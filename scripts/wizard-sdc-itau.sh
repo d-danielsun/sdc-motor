@@ -192,8 +192,9 @@ finish() {
 # Arquivos de chave/certificado ficam FORA do repositório, em ITAU_WORKDIR, com permissão 600.
 # Segredos (Client Secret, chave, certificado) vão para o 1Password — nunca para o .env.
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ITAU_WORKDIR="${ITAU_WORKDIR:-$HOME/w/salvei/propostas/sdc/itau}"
-ENV_FILE="${ITAU_ENV_FILE:-.env.itau.local}"   # só valores NÃO secretos (agência, conta, Client ID)
+ENV_FILE="${ITAU_ENV_FILE:-$SCRIPT_DIR/../.env.itau.local}"   # só valores NÃO secretos (agência, conta, Client ID)
 ITAU_STS="${ITAU_STS:-https://sts.itau.com.br}"
 CSR="$ITAU_WORKDIR/itau-cert.csr"
 CERT_KEY="$ITAU_WORKDIR/itau-cert.key"
@@ -247,8 +248,14 @@ note "  base64 -d texto.b64 | openssl pkeyutl -decrypt -inkey private.pem -pkeyo
 say "Se não estiver claro, pergunte ao Caio (caio.moretti@itaubba.com) antes de tentar às cegas."
 pause "Quando tiver o Client ID e o token temporário em mãos, Enter."
 ask ITAU_CLIENT_ID "Client ID:"
-ask_secret ITAU_TOKEN_TEMPORARIO "Token temporário (não aparece na tela):"
-[[ -n "$ITAU_CLIENT_ID" && -n "$ITAU_TOKEN_TEMPORARIO" ]] || { warn "Client ID e token são obrigatórios"; exit 1; }
+if [[ -s "$RESPOSTA" ]]; then
+  note "Já existe resposta da solicitação em $RESPOSTA — o token temporário não é mais necessário."
+  ITAU_TOKEN_TEMPORARIO=""
+else
+  ask_secret ITAU_TOKEN_TEMPORARIO "Token temporário (não aparece na tela):"
+  [[ -n "$ITAU_TOKEN_TEMPORARIO" ]] || { warn "o token temporário é obrigatório"; exit 1; }
+fi
+[[ -n "$ITAU_CLIENT_ID" ]] || { warn "Client ID é obrigatório"; exit 1; }
 write_env ITAU_CLIENT_ID "$ITAU_CLIENT_ID"
 note "O token temporário NÃO é gravado em lugar nenhum — ele só serve para a solicitação a seguir."
 pause
@@ -274,12 +281,13 @@ stage "Solicitar o certificado ao Itaú"
 say "POST $ITAU_STS/seguranca/v1/certificado/solicitacao (text/plain, Bearer = token temporário)."
 warn "O token temporário costuma ser de USO ÚNICO e a resposta traz o Client Secret UMA vez só."
 note "A resposta é gravada em $RESPOSTA (permissão 600) para você copiar o certificado e o secret."
-if confirm "Enviar a solicitação agora?"; then
-  STATUS=$(curl -sS -o "$RESPOSTA" -w '%{http_code}' -X POST "$ITAU_STS/seguranca/v1/certificado/solicitacao" \
-    -H 'Content-Type: text/plain' -H "Authorization: Bearer ${ITAU_TOKEN_TEMPORARIO}" \
-    --data-binary "@$CSR") || STATUS="erro"
-  say "HTTP $STATUS"
-  [[ "$STATUS" =~ ^2 ]] || { warn "o banco recusou; veja $RESPOSTA e fale com o Caio antes de tentar de novo"; exit 1; }
+if [[ -s "$RESPOSTA" ]]; then
+  say "${GREEN}✓${RESET} resposta já obtida em $RESPOSTA — NÃO reenvio a solicitação (o secret viria só uma vez)"
+elif confirm "Enviar a solicitação agora?"; then
+  # token por variável de ambiente local ao comando → stdin do curl (nunca em argv); gravação atômica, nunca sobrescreve
+  ITAU_TOKEN_TEMPORARIO="$ITAU_TOKEN_TEMPORARIO" "$SCRIPT_DIR/itau-sts.sh" solicitar "$ITAU_STS" "$CSR" "$RESPOSTA" \
+    || { warn "o banco recusou; veja $RESPOSTA.recusa-* e fale com o Caio antes de tentar de novo"; exit 1; }
+  ITAU_TOKEN_TEMPORARIO=""
 else
   SKIPPED+=("solicitação do certificado (rode o wizard de novo)")
   finish; exit 0
@@ -307,8 +315,12 @@ if ! command -v op >/dev/null 2>&1 || ! op whoami >/dev/null 2>&1; then
   warn "op CLI ausente ou sem sessão — rode \`eval \$(op signin)\` e repita este estágio, ou guarde à mão."
   SKIPPED+=("1Password: Client Secret, $CERT_KEY e $CERT")
 elif confirm "Criar os itens 'Itaú SDC - …' no 1Password agora?"; then
-  op item create --category password --title "Itaú SDC - Client Secret" "password=${ITAU_CLIENT_SECRET}" "client_id[text]=${ITAU_CLIENT_ID}" >/dev/null \
+  # o secret vai num template temporário (600) em vez de argv; apagado logo depois
+  OP_TPL=$(mktemp)
+  S="$ITAU_CLIENT_SECRET" C="$ITAU_CLIENT_ID" python3 -c 'import json,os; print(json.dumps({"title":"Itaú SDC - Client Secret","category":"PASSWORD","fields":[{"id":"password","type":"CONCEALED","purpose":"PASSWORD","label":"password","value":os.environ["S"]},{"id":"client_id","type":"STRING","label":"client_id","value":os.environ["C"]}]}))' > "$OP_TPL"
+  op item create --template "$OP_TPL" >/dev/null \
     && say "${GREEN}✓${RESET} Itaú SDC - Client Secret" || SKIPPED+=("1Password: Client Secret")
+  rm -f "$OP_TPL"
   op document create "$CERT_KEY" --title "Itaú SDC - chave do certificado" >/dev/null \
     && say "${GREEN}✓${RESET} Itaú SDC - chave do certificado" || SKIPPED+=("1Password: chave")
   op document create "$CERT" --title "Itaú SDC - certificado" >/dev/null \
@@ -324,12 +336,8 @@ stage "Testar o token (client_credentials sobre mTLS)"
 say "POST $ITAU_STS/api/oauth/token com o certificado e a chave. O token NÃO é impresso."
 if confirm "Pedir um token de teste agora?"; then
   CORPO=$(mktemp)
-  STATUS=$(curl -sS -o "$CORPO" -w '%{http_code}' -X POST "$ITAU_STS/api/oauth/token" \
-    --cert "$CERT" --key "$CERT_KEY" \
-    -H 'Content-Type: application/x-www-form-urlencoded' \
-    --data-urlencode 'grant_type=client_credentials' \
-    --data-urlencode "client_id=${ITAU_CLIENT_ID}" \
-    --data-urlencode "client_secret=${ITAU_CLIENT_SECRET}") || STATUS="erro"
+  STATUS=$(ITAU_CLIENT_ID="$ITAU_CLIENT_ID" ITAU_CLIENT_SECRET="$ITAU_CLIENT_SECRET" \
+    "$SCRIPT_DIR/itau-sts.sh" token "$ITAU_STS" "$CERT" "$CERT_KEY" "$CORPO") || STATUS="erro"
   if [[ "$STATUS" == "200" ]] && grep -q '"access_token"' "$CORPO"; then
     say "${GREEN}✓${RESET} token emitido (HTTP 200). O motor usa ITAU_CLIENT_ID/SECRET + ITAU_CERT_FILE/ITAU_KEY_FILE."
   else
