@@ -2,7 +2,8 @@
 // webhook perdeu. Um pagamento com problema não derruba os outros; o resumo só é gravado como ok se a varredura completou.
 import { OVERDUE_RECHECK_DAYS, RECONCILE_LOOKBACK_DAYS } from "../limits.js";
 import type { Deps } from "../ports.js";
-import { RECEIVED_STATUSES, receivePayment } from "../receive.js";
+import { RECEIVED_STATUSES, isReceivedStatus } from "../gateway.js";
+import { receivePayment } from "../receive.js";
 import { moveLineIdFromRef } from "../types.js";
 
 export interface ReconcileSummary {
@@ -10,6 +11,8 @@ export interface ReconcileSummary {
   unmatched: number; divergent: number; needsReview: number; errors: number; overdueChecked: number;
   /** Quantos vieram só pelo passe de data de CRÉDITO — o que a janela de pagamento perdia. */
   byCreditDate: number;
+  /** Motivo de a reconciliação ter sido pulada (gateway que não emite, ex.: Itaú). */
+  skipped?: string;
 }
 
 export function daysAgo(today: string, days: number): string {
@@ -25,6 +28,13 @@ export async function reconcileDaily(deps: Deps, o: { lookbackDays?: number } = 
   const anchor = last?.ok && last.at && last.at.slice(0, 10) < today ? last.at.slice(0, 10) : today;   // motor parado > janela: a janela cresce até o último sucesso
   const from = daysAgo(anchor, lookback);
   const s: ReconcileSummary = { at: deps.clock.now().toISOString(), ok: false, from, scanned: 0, received: 0, already: 0, unmatched: 0, divergent: 0, needsReview: 0, errors: 0, overdueChecked: 0, byCreditDate: 0 };
+  // Gateway que não emite (Itaú até a Cobrança V2) não tem o que reconciliar: pula com o motivo e NÃO grava RECONCILE_LAST
+  // (gravar ok=false zeraria a âncora do último sucesso; a janela precisa crescer até ele quando o gateway voltar).
+  if (!deps.gateway.canIssue) {
+    s.skipped = `gateway ${deps.gateway.name} não emite cobrança — reconciliação pulada`;
+    deps.log("reconcile-daily", { ...s });
+    return s;
+  }
   const contabiliza = (r: string) => {
     if (r === "received") s.received++;
     else if (r === "already") s.already++;
@@ -40,7 +50,7 @@ export async function reconcileDaily(deps: Deps, o: { lookbackDays?: number } = 
   // precisava pegá-lo. Sem o segundo passe, esse pagamento só apareceria pelo passe de vencidas.
   for (const chave of ["paymentDateFrom", "creditDateFrom"] as const) {
     for (const status of RECEIVED_STATUSES) {
-      for await (const p of deps.asaas.listPayments({ status, [chave]: from })) {
+      for await (const p of deps.gateway.listCharges({ status, [chave]: from })) {
         if (vistos.has(p.id)) continue;
         vistos.add(p.id);
         s.scanned++;
@@ -60,8 +70,8 @@ export async function reconcileDaily(deps: Deps, o: { lookbackDays?: number } = 
   for (const c of await deps.repo.charges.listOpenDueBefore(daysAgo(today, OVERDUE_RECHECK_DAYS), 500)) {
     s.overdueChecked++;
     try {
-      const p = c.asaasPaymentId ? await deps.asaas.getPayment(c.asaasPaymentId) : null;
-      if (p && !p.deleted && (RECEIVED_STATUSES as readonly string[]).includes(p.status)) {
+      const p = c.asaasPaymentId ? await deps.gateway.getCharge(c.asaasPaymentId) : null;
+      if (p && !p.deleted && isReceivedStatus(p.status)) {
         contabiliza(await receivePayment(deps, p, "reconcile"));
       }
     } catch (e) { s.errors++; deps.log("reconcile: cobrança vencida com erro", { chargeId: c.id, error: (e as Error).message }); }

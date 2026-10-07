@@ -4,6 +4,7 @@
 // watchdog roda a cada 15 min, então a detecção acontece em ≤15 min. Enviar não pode derrubar
 // o watchdog: `alertar` captura a falha e devolve o resultado.
 import { API_KEY_WARN_DAYS, STALE_HEARTBEAT_HOURS, TIPOS_TRAVA, TRAVADA_MINUTOS } from "../limits.js";
+import { GatewayNotReady } from "../gateway.js";
 import type { Deps } from "../ports.js";
 import { alertaChaveVencendo, alertaFilaInterrompida, alertaSilencio, alertaTravada, alertar, type ResultadoAlerta } from "./notify.js";
 
@@ -14,6 +15,8 @@ export interface WatchdogSummary {
   travadas: Record<string, number>;
   /** O que aconteceu com cada alerta neste tick — vai pro log do job e pro console. */
   alertas: Record<string, ResultadoAlerta>;
+  /** Motivo de a checagem da fila de avisos ter sido pulada (gateway sem fila ainda, ex.: Itaú). */
+  eventQueueSkipped?: string;
 }
 
 const HOUR = 3_600_000;
@@ -26,20 +29,27 @@ export function isBusinessHoursBrt(now: Date): boolean {
 }
 
 export async function watchdog(deps: Deps): Promise<WatchdogSummary> {
-  const { repo, asaas, clock } = deps;
+  const { repo, gateway, clock } = deps;
   const now = clock.now();
   const s: WatchdogSummary = { at: now.toISOString(), ok: false, interrupted: false, reactivated: false, penalizedDelta: 0, staleHeartbeat: false, apiKeyDays: null, travadas: {}, alertas: {} };
   const consoleUrl = await repo.config.get<string | null>("CONSOLE_PUBLIC_URL").catch(() => null);
 
   const webhookId = await repo.config.get<string | null>("ASAAS_WEBHOOK_ID");
-  const wh = webhookId ? await asaas.getWebhook(webhookId) : null;
+  // Gateway sem fila de avisos ainda (Itaú): pula SÓ esta checagem e registra o motivo — os outros alertas seguem.
+  let wh = null;
+  try { wh = webhookId ? await gateway.getEventQueue(webhookId) : null; }
+  catch (e) {
+    if (!(e instanceof GatewayNotReady)) throw e;
+    s.eventQueueSkipped = e.message;
+    deps.log("watchdog: checagem da fila de avisos pulada", { gateway: gateway.name, motivo: e.message });
+  }
   if (wh) {
     if (wh.interrupted) {
       s.interrupted = true;
       const exc = await repo.exceptions.openOnce({ type: "queue_interrupted", refTable: "asaas_webhooks", detail: { webhookId: wh.id, penalizedRequestsCount: wh.penalizedRequestsCount } });
       const last = await repo.config.get<string | null>("ASAAS_REACTIVATED_AT");
       if (!last || now.getTime() - new Date(last).getTime() >= HOUR) {
-        await asaas.updateWebhook(wh.id, { interrupted: false });
+        await gateway.resumeEventQueue(wh.id);
         await repo.config.set("ASAAS_REACTIVATED_AT", now.toISOString());
         s.reactivated = true;
       }

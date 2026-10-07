@@ -11,6 +11,7 @@
 //
 // AS DATAS SÃO RELATIVAS A HOJE de propósito: o aging só faz sentido assim, e um seed com
 // datas fixas envelhece e passa a mostrar tudo em "31_mais" depois de dois meses.
+import { AsaasGateway } from "../adapters/asaas/gateway.js";
 import { pathToFileURL } from "node:url";
 import pg from "pg";
 import { fixedClock, todayBrt } from "../adapters/clock.js";
@@ -299,7 +300,7 @@ export async function garantirBanco(url: string): Promise<{ criado: boolean; mig
 // ── execução ─────────────────────────────────────────────────────────────────
 
 export function criarCtx(deps: Deps, hoje: string): DemoCtx {
-  return { deps, odoo: deps.odoo as FakeOdoo, asaas: deps.asaas as FakeAsaas, hoje, dia: (n) => deslocar(hoje, n) };
+  return { deps, odoo: deps.odoo as FakeOdoo, asaas: (deps.gateway as AsaasGateway).client as FakeAsaas, hoje, dia: (n) => deslocar(hoje, n) };
 }
 
 /** Monta as dependências do demo: repositório real, Odoo e Asaas falsos, relógio congelado. */
@@ -308,7 +309,7 @@ export function demoDeps(pool: ReturnType<typeof createPool>, hoje: string, lock
   const asaas = new FakeAsaas();
   const repo = createPgRepo(pool, lockPool);
   // Relógio congelado ao meio-dia: o cenário não muda de resultado se rodar 23h59.
-  const deps: Deps = { repo, odoo, asaas, clock: fixedClock(`${hoje}T15:00:00.000Z`), log: () => {} };
+  const deps: Deps = { repo, odoo, gateway: new AsaasGateway(asaas), clock: fixedClock(`${hoje}T15:00:00.000Z`), log: () => {} };
   return { deps, odoo, asaas };
 }
 

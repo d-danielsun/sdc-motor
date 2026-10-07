@@ -35,6 +35,37 @@ Container completo (AC14 — a prova de que não depende do Supabase): `docker c
 - **A varredura não trava:** o watermark é um balde de 1 s (o Odoo devolve `write_date` truncado; 200+ faturas confirmadas no mesmo segundo são drenadas por id); uma fatura que o Odoo recusa 3 varreduras seguidas vira exceção com o id e a fila anda.
 - **Nada em silêncio:** falha definitiva de evento ou de job vira exceção reprocessável; `IDA_ENABLED` é o kill switch de toda emissão; boot recusa banco sem migração.
 
+## Gateway de cobrança (Asaas hoje, Itaú quando o banco responder)
+
+Em 25/09/2026 a SDC decidiu emitir pelo **Itaú (API de Cobrança V2)**. O banco ainda não disse como
+avisa o pagamento, qual é o payload da Cobrança V2, nem carteira/protesto. Então o motor ficou
+pronto para trocar de gateway **sem inventar o que o banco não disse**:
+
+- **Porta neutra** `ChargeGateway` (`src/core/gateway.ts`): cliente, cobrança, listagem de liquidadas,
+  aviso normalizado (`SettlementEvent`) e fila de avisos. O núcleo só conhece a porta; um teste de
+  fronteira (`test/unit/boundary.test.ts`) proíbe `adapters/asaas` e tipos `Asaas*` em `src/core`.
+- **`AsaasGateway`** (`src/adapters/asaas/gateway.ts`) embrulha o client atual sem mudar comportamento.
+  O memo da baixa é `<gateway>:<id>` — para o Asaas continua exatamente `asaas:<pay_id>`.
+- **`ItauGateway`** (`src/adapters/itau/`) é stub explícito: toda operação de cliente/cobrança/aviso
+  lança `GatewayNotReady("aguardando Cobrança V2 do Itaú: …")`. Nenhum endpoint de boleto existe.
+  O que já funciona: token OAuth `client_credentials` sobre **mTLS** (cache ≤ 270 s, pedidos
+  simultâneos dividem uma chamada, 401 do STS sem retry, 401 da API renova uma vez), headers
+  `x-itau-*` e solicitação/renovação do certificado dinâmico, com `diasParaVencer` para o alerta.
+- **Banco não muda:** colunas `asaas_*`, tabela `webhook_events` e chaves `ASAAS_*` ficam como estão
+  (migration aplicada é imutável). Renomear é tarefa de migration nova, depois do piloto.
+
+| Env | O quê |
+|---|---|
+| `GATEWAY` | `asaas` (default) ou `itau`. `itau` com a ida ligada (env ou `app_config`) **recusa subir**; o console também não liga a ida com gateway sem emissão |
+| `ITAU_CLIENT_ID` / `ITAU_CLIENT_SECRET` | credenciais do STS |
+| `ITAU_CERT_PEM`\|`ITAU_CERT_FILE`, `ITAU_KEY_PEM`\|`ITAU_KEY_FILE` | certificado e chave; sem eles o cliente não constrói (nunca chama sem mTLS) |
+| `ITAU_TOKEN_URL` | default `https://sts.itau.com.br/api/oauth/token` |
+| `ITAU_EXTRA_CA_FILE` | CA extra opcional; `NODE_TLS_REJECT_UNAUTHORIZED=0` é recusado |
+
+Credenciais e certificado: `scripts/wizard-sdc-itau.sh` (agência/conta → confere o par RSA → decifrar
+o e-mail do banco → CSR → solicitar certificado → 1Password → testar token). Os testes do Itaú usam
+um servidor HTTPS local com PKI gerada em tmpdir — nenhum `.pem` é versionado e nada chama o banco.
+
 ## API do console (`/api/v1`, cookie de sessão)
 
 | Rota | O quê |

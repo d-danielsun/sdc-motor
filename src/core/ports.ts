@@ -1,9 +1,10 @@
 // Portas: tudo que o núcleo precisa do mundo. Adaptadores implementam; fakes também.
 import type {
-  Alert, AsaasCustomer, AsaasPayment, AsaasWebhook, AuditDirection, Charge, ChargeStatus, CustomerMap,
+  Alert, AuditDirection, Charge, ChargeStatus, CustomerMap,
   DiffPolicy, ExceptionType, Money, OdooInvoice, OdooInvoiceLine, OdooPartner, OdooPaymentResult,
   ProcessStatus, StoredAsaasEvent, StoredOdooEvent,
 } from "./types.js";
+import type { ChargeGateway } from "./gateway.js";
 
 export interface OdooClient {
   /** Faturas de cliente (postadas/canceladas/rascunho) depois do watermark. O Odoo devolve write_date truncado a segundos
@@ -22,31 +23,6 @@ export interface OdooClient {
   registerPayment(p: { moveLineId: number; amount: Money; paymentDate: string; ref: string }): Promise<OdooPaymentResult>;
 }
 
-export interface AsaasClient {
-  findCustomerByExternalRef(ref: string): Promise<AsaasCustomer | null>;
-  /** Cliente que a SDC já tinha no Asaas (sem a nossa referência): adotar em vez de duplicar por CPF/CNPJ. */
-  findCustomerByDocument(cpfCnpj: string): Promise<AsaasCustomer | null>;
-  createCustomer(c: {
-    name: string; cpfCnpj: string; email?: string | null; phone?: string | null;
-    externalReference: string; notificationDisabled: boolean;
-  }): Promise<AsaasCustomer>;
-  updateCustomer(id: string, patch: { notificationDisabled?: boolean }): Promise<AsaasCustomer>;
-  createPayment(p: {
-    customer: string; value: Money; dueDate: string; externalReference: string; description: string;
-  }): Promise<AsaasPayment>;
-  getPayment(id: string): Promise<AsaasPayment | null>;
-  /** Boleto vivo (não deletado) com este externalReference — idempotência da ida pela fonte de verdade. */
-  findPaymentByExternalRef(ref: string): Promise<AsaasPayment | null>;
-  deletePayment(id: string): Promise<void>;
-  /** `creditDateFrom` usa `estimatedCreditDate[ge]`: boleto pago numa quinta e creditado na terça
-   *  sai da janela de `paymentDate` quando finalmente vira RECEIVED. */
-  listPayments(f: { status?: string; paymentDateFrom?: string; creditDateFrom?: string; externalReference?: string }): AsyncIterable<AsaasPayment>;
-  getWebhook(id: string): Promise<AsaasWebhook | null>;
-  listWebhooks(): Promise<AsaasWebhook[]>;
-  createWebhook(w: { name: string; url: string; email: string; authToken: string; events: string[] }): Promise<AsaasWebhook>;
-  updateWebhook(id: string, patch: { interrupted?: boolean; enabled?: boolean }): Promise<AsaasWebhook>;
-}
-
 export interface Repo {
   config: {
     get<T = unknown>(key: string): Promise<T | null>;
@@ -60,7 +36,7 @@ export interface Repo {
   charges: {
     getByMoveLine(moveLineId: number): Promise<Charge | null>;
     getByExternalRef(ref: string): Promise<Charge | null>;
-    getByAsaasPayment(asaasPaymentId: string): Promise<Charge | null>;
+    getByGatewayCharge(gatewayChargeId: string): Promise<Charge | null>;
     listByMove(moveId: number): Promise<Charge[]>;
     /** Insere; null se outra execução já criou a cobrança desta parcela (unique em odoo_move_line_id). */
     insert(c: Omit<Charge, "id">): Promise<Charge | null>;
@@ -181,7 +157,8 @@ export interface Notifier {
 export interface Deps {
   repo: Repo;
   odoo: OdooClient;
-  asaas: AsaasClient;
+  /** Gateway de cobrança atrás da porta neutra (Asaas hoje; Itaú quando a Cobrança V2 chegar). */
+  gateway: ChargeGateway;
   clock: Clock;
   log: Logger;
   /** Ausente = ninguém é avisado (o motor funciona igual). */

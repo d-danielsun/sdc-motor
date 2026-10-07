@@ -4,7 +4,8 @@
 import { toCents } from "./money.js";
 import type { Deps } from "./ports.js";
 import { isTransient } from "./ports.js";
-import type { AsaasPayment, Charge, DiffPolicy, Money } from "./types.js";
+import { type GatewayCharge, isReceivedStatus } from "./gateway.js";
+import type { Charge, DiffPolicy, Money } from "./types.js";
 import { moveLineIdFromRef } from "./types.js";
 
 export type Classification =
@@ -12,7 +13,7 @@ export type Classification =
   | { ok: false; reason: "amount_divergent" | "writeoff_needed"; policy: DiffPolicy | null };
 
 /** Compara o recebido com o esperado. juros/multa do próprio Asaas (originalValue == esperado) é classificado, não confundido com divergência. */
-export function classifyReceipt(p: AsaasPayment, expected: Money, o: { toleranceCents: number; jurosMultaAuto: boolean }): Classification {
+export function classifyReceipt(p: GatewayCharge, expected: Money, o: { toleranceCents: number; jurosMultaAuto: boolean }): Classification {
   const diff = toCents(p.value) - toCents(expected);
   const inCash = p.status === "RECEIVED_IN_CASH";
   if (Math.abs(diff) <= o.toleranceCents) return { ok: true, policy: inCash ? "in_cash" : null };
@@ -23,19 +24,18 @@ export function classifyReceipt(p: AsaasPayment, expected: Money, o: { tolerance
 }
 
 export type ReceiveOutcome = "received" | "already" | "unmatched" | "foreign" | "divergent" | "writeoff_needed" | "not_received" | "busy" | "wizard_failed" | "needs_review";
-export const RECEIVED_STATUSES = ["RECEIVED", "RECEIVED_IN_CASH"] as const;
 
 /** O id do pagamento (imutável) manda; externalReference (editável no Asaas) só entra quando ainda não há vínculo. Os dois discordando é conflito. */
-export async function findChargeForPayment(deps: Deps, p: AsaasPayment): Promise<Charge | null | "conflict"> {
-  const byId = await deps.repo.charges.getByAsaasPayment(p.id);
+export async function findChargeForPayment(deps: Deps, p: GatewayCharge): Promise<Charge | null | "conflict"> {
+  const byId = await deps.repo.charges.getByGatewayCharge(p.id);
   const byRef = p.externalReference ? await deps.repo.charges.getByExternalRef(p.externalReference) : null;
   if (byId && byRef && byId.id !== byRef.id) return "conflict";
   return byId ?? byRef;
 }
 
-export async function receivePayment(deps: Deps, p: AsaasPayment, source: "webhook" | "reconcile" | "console", o: { acceptWriteoff?: boolean } = {}): Promise<ReceiveOutcome> {
+export async function receivePayment(deps: Deps, p: GatewayCharge, source: "webhook" | "reconcile" | "console", o: { acceptWriteoff?: boolean } = {}): Promise<ReceiveOutcome> {
   const { repo } = deps;
-  if (p.deleted || !(RECEIVED_STATUSES as readonly string[]).includes(p.status)) return "not_received";
+  if (p.deleted || !isReceivedStatus(p.status)) return "not_received";
   const found = await findChargeForPayment(deps, p);
   if (found === "conflict") {
     await repo.exceptions.openOnce({ type: "payment_unmatched", refTable: "asaas_payments", detail: { reason: "id do pagamento e externalReference apontam para cobranças diferentes", asaasPaymentId: p.id, externalReference: p.externalReference, source } });
@@ -50,7 +50,7 @@ export async function receivePayment(deps: Deps, p: AsaasPayment, source: "webho
   return r.ok ? r.value : "busy";
 }
 
-async function receiveLocked(deps: Deps, p: AsaasPayment, externalRef: string, source: string, o: { acceptWriteoff?: boolean }): Promise<ReceiveOutcome> {
+async function receiveLocked(deps: Deps, p: GatewayCharge, externalRef: string, source: string, o: { acceptWriteoff?: boolean }): Promise<ReceiveOutcome> {
   const { repo, odoo, clock, log } = deps;
   const charge = (await repo.charges.getByExternalRef(externalRef))!;   // releitura sob o lock
   if (charge.status === "exception" && source !== "console") return "needs_review";   // wizard falhou antes: só uma pessoa reabre
@@ -110,7 +110,7 @@ async function receiveLocked(deps: Deps, p: AsaasPayment, externalRef: string, s
 
   let result;
   try {
-    result = await odoo.registerPayment({ moveLineId: charge.odooMoveLineId, amount: p.value, paymentDate, ref: `asaas:${p.id}` });
+    result = await odoo.registerPayment({ moveLineId: charge.odooMoveLineId, amount: p.value, paymentDate, ref: `${deps.gateway.name}:${p.id}` });
   } catch (e) {
     if (isTransient(e)) throw e;   // rede/5xx: quem chamou re-tenta
     // Definitivo (ex.: wizard rodou mas a parcela não fechou): NÃO re-tentar às cegas — pode duplicar. Fica pra uma pessoa.

@@ -8,7 +8,7 @@ import { isTransient } from "../ports.js";
 import type { OdooInvoice } from "../types.js";
 import { handleInvoice, type InvoiceOutcome } from "./handleInvoice.js";
 
-export interface SyncSummary { at: string; ok: boolean; enabled: boolean; pages: number; invoices: number; created: number; cancelled: number; blocked: number; failed: number; busy: number; skippedBad: number; watermark: { writeDate: string; id: number } | null }
+export interface SyncSummary { at: string; ok: boolean; enabled: boolean; pages: number; invoices: number; created: number; cancelled: number; blocked: number; failed: number; busy: number; skippedBad: number; gatewayCanIssue: boolean; watermark: { writeDate: string; id: number } | null }
 export const secondOf = (iso: string): string => `${iso.slice(0, 19)}.000Z`;
 
 export async function syncInvoices(deps: Deps, o: { pageSize?: number } = {}): Promise<SyncSummary> {
@@ -16,8 +16,16 @@ export async function syncInvoices(deps: Deps, o: { pageSize?: number } = {}): P
   const pageSize = o.pageSize ?? ODOO_PAGE_SIZE;
   const enabled = (await repo.config.get<boolean>("IDA_ENABLED")) === true;
   let wm = await repo.watermarks.get("invoices");
-  const s: SyncSummary = { at: clock.now().toISOString(), ok: true, enabled, pages: 0, invoices: 0, created: 0, cancelled: 0, blocked: 0, failed: 0, busy: 0, skippedBad: 0, watermark: wm };
+  const s: SyncSummary = { at: clock.now().toISOString(), ok: true, enabled, pages: 0, invoices: 0, created: 0, cancelled: 0, blocked: 0, failed: 0, busy: 0, skippedBad: 0, gatewayCanIssue: deps.gateway.canIssue, watermark: wm };
   if (!enabled) { await repo.config.set("SYNC_LAST", s); return s; }
+  // Gateway que não emite (Itaú até a Cobrança V2): NÃO varre e NÃO toca no watermark. Se varresse, as faturas seriam
+  // contadas como puladas e o watermark passaria por elas — ao voltar para um gateway que emite, nunca seriam cobradas.
+  if (!deps.gateway.canIssue) {
+    s.ok = false;
+    await repo.config.set("SYNC_LAST", s);
+    log("sync-invoices: gateway não emite — varredura suspensa, watermark parado", { gateway: deps.gateway.name, watermark: wm });
+    return s;
+  }
   const cutoff = await repo.config.get<string | null>("GO_LIVE_CUTOFF_DATE");
   const failures = (await repo.config.get<Record<string, number>>("SWEEP_FAILURES")) ?? {};
 

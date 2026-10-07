@@ -4,7 +4,8 @@ import { ensureCustomer } from "../customers.js";
 import { TOLERANCE_MAX_BRL } from "../limits.js";
 import { toCents } from "../money.js";
 import { FilaJaTemPendente, type Deps } from "../ports.js";
-import { RECEIVED_STATUSES, receivePayment } from "../receive.js";
+import { isReceivedStatus } from "../gateway.js";
+import { receivePayment } from "../receive.js";
 import { externalRefForPartner, type ExceptionType } from "../types.js";
 import { handleInvoice } from "./handleInvoice.js";
 import type { ReconcileSummary } from "./reconcileDaily.js";
@@ -72,7 +73,7 @@ export async function reprocessException(deps: Deps, id: number, by: string): Pr
     queue_interrupted: async () => {
       const whId = await repo.config.get<string | null>("ASAAS_WEBHOOK_ID");
       if (!whId) return fail("config", "ASAAS_WEBHOOK_ID não configurado");
-      await deps.asaas.updateWebhook(whId, { interrupted: false });
+      await deps.gateway.resumeEventQueue(whId);
       return { ok: true, action: "webhook_reactivated" };
     },
   };
@@ -97,9 +98,9 @@ export async function acceptWriteoff(deps: Deps, id: number, by: string): Promis
   if (!r.ok) return r.error;
   if (r.ex.type !== "writeoff_needed") return fail("invalid_state", "só vale para writeoff_needed");
   const paymentId = (r.ex.detail as { asaasPaymentId?: string } | null)?.asaasPaymentId;
-  const p = paymentId ? await deps.asaas.getPayment(paymentId) : null;
+  const p = paymentId ? await deps.gateway.getCharge(paymentId) : null;
   if (!p) return fail("upstream", "pagamento não encontrado no Asaas");
-  if (p.deleted || !(RECEIVED_STATUSES as readonly string[]).includes(p.status)) return fail("invalid_state", `pagamento não está mais recebido no Asaas (status ${p.status}${p.deleted ? ", apagado" : ""})`);
+  if (p.deleted || !isReceivedStatus(p.status)) return fail("invalid_state", `pagamento não está mais recebido no Asaas (status ${p.status}${p.deleted ? ", apagado" : ""})`);
   const outcome = await receivePayment(deps, p, "console", { acceptWriteoff: true });
   if (outcome === "busy") return fail("busy", "cobrança em uso por outra execução — tente de novo");
   if (outcome === "writeoff_needed") return fail("invalid_state", "excedente ainda sem tratamento contábil aprovado (S0.3/Q3); nenhuma baixa foi feita no Odoo");
@@ -121,7 +122,7 @@ export async function acceptWriteoff(deps: Deps, id: number, by: string): Promis
  * a cada cliente. Retomar é simplesmente rodar de novo.
  */
 export async function enableCustomerNotifications(deps: Deps): Promise<NotificationsProgress> {
-  const { repo, asaas, clock, log } = deps;
+  const { repo, gateway, clock, log } = deps;
   await repo.config.set("NOTIFICATIONS_ENABLED", true);   // política para os PRÓXIMOS clientes
   const pendentes = (await repo.customers.listSynced()).filter((c) => c.asaasCustomerId);
   const p: NotificationsProgress = { total: pendentes.length, updated: 0, failed: 0, at: clock.now().toISOString(), ok: false };
@@ -130,9 +131,9 @@ export async function enableCustomerNotifications(deps: Deps): Promise<Notificat
   for (const c of pendentes) {
     try {
       // Quem já está com notificação ligada não é rechamado: é o que faz retomar ser barato.
-      const atual = await asaas.findCustomerByExternalRef(externalRefForPartner(c.odooPartnerId));
+      const atual = await gateway.findCustomerByExternalRef(externalRefForPartner(c.odooPartnerId));
       if (atual && atual.notificationDisabled === false) { p.updated++; continue; }
-      await asaas.updateCustomer(c.asaasCustomerId!, { notificationDisabled: false });
+      await gateway.updateCustomer(c.asaasCustomerId!, { notificationDisabled: false });
       p.updated++;
     } catch (e) {
       p.failed++;
@@ -202,15 +203,18 @@ export async function setConsoleConfig(deps: Deps, key: string, value: unknown):
   // Ligar a ida sem data de corte emitiria boleto pro histórico inteiro do Odoo na primeira varredura (red team).
   if (k === "IDA_ENABLED" && value === true && !(await deps.repo.config.get<string | null>("GO_LIVE_CUTOFF_DATE"))) return fail("invalid_state", "defina GO_LIVE_CUTOFF_DATE antes de ligar IDA_ENABLED");
   if (k === "GO_LIVE_CUTOFF_DATE" && value === null && (await deps.repo.config.get<boolean>("IDA_ENABLED")) === true) return fail("invalid_state", "desligue IDA_ENABLED antes de remover a data de corte");
+  // Gateway sem emissão real (Itaú até a Cobrança V2): ligar a ida não teria o que emitir.
+  const ligaIda = k === "IDA_ENABLED" && value !== false;
+  if (ligaIda && !deps.gateway.canIssue) return fail("invalid_state", `o gateway ${deps.gateway.name} ainda não emite cobrança (aguardando Cobrança V2) — a ida não pode ser ligada`);
   await deps.repo.config.set(k, k === "TOLERANCE_BRL" ? String(value) : value);
   return { ok: true, action: "config_set", detail: { key: k, value } };
 }
 
 export async function healthReport(deps: Deps, queries: ConsoleQueries): Promise<HealthReport> {
-  const { repo, asaas, clock } = deps;
+  const { repo, gateway, clock } = deps;
   const whId = await repo.config.get<string | null>("ASAAS_WEBHOOK_ID");
   let wh: { interrupted: boolean; penalizedRequestsCount: number } | null = null;
-  try { wh = whId ? await asaas.getWebhook(whId) : null; } catch { wh = null; }
+  try { wh = whId ? await gateway.getEventQueue(whId) : null; } catch { wh = null; }
   const keyCreated = await repo.config.get<string | null>("ODOO_API_KEY_CREATED_AT");
   return {
     idaEnabled: (await repo.config.get<boolean>("IDA_ENABLED")) === true,

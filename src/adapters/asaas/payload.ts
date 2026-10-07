@@ -1,8 +1,9 @@
 // Normalização tolerante do payload do Asaas: campo desconhecido é ignorado, campo faltando vira null,
 // valor inválido vira null. NUNCA lança — uma exceção aqui derrubaria a fila do Asaas (15 falhas).
-import { ASAAS_ID_RE } from "./limits.js";
-import { safeMoney } from "./money.js";
+import { safeMoney } from "../../core/money.js";
 import type { AsaasPayment, AsaasWebhookEvent } from "./types.js";
+
+export const ASAAS_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;  // pay_…, cus_…, evt_…, uuid do webhook
 
 type Raw = Record<string, unknown>;
 const obj = (v: unknown): Raw => (typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Raw) : {});

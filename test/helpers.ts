@@ -1,6 +1,8 @@
 import { createPool } from "../src/adapters/db/pool.js";
 import { createPgRepo } from "../src/adapters/db/repo.js";
 import { FakeAsaas } from "../src/adapters/fakes/fakeAsaas.js";
+import { AsaasGateway } from "../src/adapters/asaas/gateway.js";
+import type { Deps } from "../src/core/ports.js";
 import { FakeOdoo } from "../src/adapters/fakes/fakeOdoo.js";
 import { FakeNotifier } from "../src/adapters/notify/fake.js";
 import { fixedClock } from "../src/adapters/clock.js";
@@ -11,7 +13,6 @@ import { createAuthStore } from "../src/adapters/db/auth.js";
 import { createConsoleQueries } from "../src/adapters/db/console.js";
 import { CUSTO_TESTE, hashPassword, type FreioDeLogin } from "../src/core/auth.js";
 import { CONFIG_KEYS } from "../src/core/console.js";
-import type { Deps } from "../src/core/ports.js";
 
 // Banco SEPARADO do de desenvolvimento (lição U4 do QA: os testes sujavam a config do dev).
 export const DB_URL = process.env.DATABASE_URL_TEST ?? "postgres://motor:motor@localhost:55432/motor_test";
@@ -30,7 +31,8 @@ export async function dbReachable(): Promise<boolean> {
 }
 
 export interface World {
-  deps: Deps; odoo: FakeOdoo; asaas: FakeAsaas; pool: ReturnType<typeof createPool>;
+  /** `deps.asaas` é o MESMO fake que o `deps.gateway` embrulha: sobrescrever método nele vale pela porta. */
+  deps: Deps & { asaas: FakeAsaas }; odoo: FakeOdoo; asaas: FakeAsaas; pool: ReturnType<typeof createPool>;
   auth: ReturnType<typeof createAuthStore>;
   /** Canal de alerta em memória: `w.notify.enviados` é o que teria sido mandado. */
   notify: FakeNotifier;
@@ -55,7 +57,7 @@ export async function world(o: { today?: string; idaEnabled?: boolean; cutoff?: 
   const asaas = new FakeAsaas();
   const logs: World["logs"] = [];
   const notify = new FakeNotifier(o.destinatarios ?? ["financeiro@exemplo.com.br"]);
-  const deps: Deps = { repo, odoo, asaas, clock: fixedClock(`${o.today ?? "2026-09-10"}T13:00:00.000Z`), log: (msg, ctx) => logs.push({ msg, ctx }), notify };
+  const deps: World["deps"] = { repo, odoo, asaas, gateway: new AsaasGateway(asaas), clock: fixedClock(`${o.today ?? "2026-09-10"}T13:00:00.000Z`), log: (msg, ctx) => logs.push({ msg, ctx }), notify };
   const auth = createAuthStore(pool);
   const consoleApi = createConsoleApi({ deps, queries: createConsoleQueries(pool), token: CONSOLE_TOKEN, jobs: createJobRunner(deps), auth, freio: o.freio });
   const app = () => createServer({ repo, asaasWebhookToken: TOKEN, odooWebhookKey: KEY, log: () => {}, console: consoleApi });
