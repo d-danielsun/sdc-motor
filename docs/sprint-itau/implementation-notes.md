@@ -87,3 +87,26 @@ Desvios e decisões: o que forçou, o que foi decidido, por quê.
   `notify.ts` (texto do e-mail descreve o provedor atual). Nenhum importa tipo ou client do Asaas.
 - Goal.md item 5 (S0.1 Odoo somente-leitura de verdade) **não** está no plano de 9 itens e a regra
   desta fase proíbe chamar serviço real: fica como pendência para a fase seguinte.
+
+## Correção 1 (QA NÃO-SHIP → bloqueadores) — 2026-10-07
+Cada item com teste vermelho antes da correção (visto falhar, depois passar).
+- **BLOQ-1** `syncInvoices`: `!gateway.canIssue` → retorna antes de tocar no watermark (`ok=false`,
+  `gatewayCanIssue=false` em `SYNC_LAST`, log). Escolha: watermark parado em vez de exceção reprocessável —
+  ao voltar a um gateway que emite, todas as faturas ainda são cobradas sem ação humana. `src/cli/job.ts` chama
+  `assertGatewayBoot` como o `main.ts` (teste `test/unit/boot-guard.test.ts`). Probe P3 agora afirma watermark
+  nulo; teste BLOQ-1 do QA adicionado em `gateway-probes.test.ts`. O guarda em `handleInvoice` continua
+  (caminho do push do Odoo, que não mexe em watermark).
+- **BLOQ-2** passo de rede do wizard extraído para `scripts/itau-sts.sh` (abaixo do marcador; biblioteca intocada):
+  resposta existente e não vazia → pula o POST e reaproveita; gravação em temporário + `mv` atômico, 600;
+  recusa vai para `<resposta>.recusa-<ts>`, nunca por cima. Estágio 3 não pede token se a resposta já existe.
+  Teste `test/unit/wizard-itau.test.ts` com curl falso no PATH.
+- **R4** token temporário e client_secret seguem para o curl por stdin (`curl -K -`), vindos de variável de
+  ambiente local ao comando; 1Password via `op item create --template` num arquivo 600 apagado em seguida.
+  `ENV_FILE` default agora relativo ao script, não ao cwd.
+- **R2** `transport.ts`: rejeita em `aborted`/`error`/`close` incompleto da resposta (timeout já existia e agora
+  também cobre corpo travado). `test/unit/itau-transport.test.ts` (mTLS real, servidor derruba/trava) — antes
+  pendurava até o timeout do teste.
+- **R1** watchdog: `GatewayNotReady` em `getEventQueue` → `eventQueueSkipped` + log; demais alertas seguem.
+  reconcile: gateway que não emite → `skipped` com motivo, sem gravar `RECONCILE_LAST` (preserva a âncora).
+- **R3** runbook `docs/sprint-itau/runbook-trocar-gateway.md`; decisão "um gateway por vez" na spec (Decisões).
+- Pendentes: R5 (harness proibido de editar), R6 (S0.1 Odoo real — proibido chamar serviço real).

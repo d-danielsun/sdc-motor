@@ -35,6 +35,13 @@ Esta sprint faz **só o que não depende dessas respostas**.
 ## Fora
 Emissão real de boleto, aviso de pagamento Itaú, rename de schema, régua, UI.
 
+## Decisões
+- **2026-10-07 (Dan): UM gateway ativo por vez.** Trocar só com zero cobranças abertas no gateway atual — ver
+  `docs/sprint-itau/runbook-trocar-gateway.md`.
+- **2026-10-07 (correção BLOQ-1):** gateway que não emite → `syncInvoices` não varre e não avança o watermark
+  (escolhida em vez de "exceção reprocessável": não depende de alguém reprocessar; ao voltar para um gateway que
+  emite, a varredura retoma do mesmo ponto e todas as faturas são cobradas).
+
 ## Invariantes (não mudam)
 Baixa só com parcela lida por id + residual antes×depois + memo `<gateway>:<id>` idempotente (para Asaas continua
 `asaas:<pay_id>` — não muda o formato existente); `IDA_ENABLED=false` default; sem `GO_LIVE_CUTOFF_DATE` nada sai;
