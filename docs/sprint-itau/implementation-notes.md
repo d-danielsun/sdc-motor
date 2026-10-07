@@ -76,3 +76,14 @@ Desvios e decisões: o que forçou, o que foi decidido, por quê.
   exemplos marcados como "confirme com o banco".
 - `~/w/salvei/propostas/sdc/02-SPEC.md` (fora de git): nova seção "§Itaú (v2)" com as lacunas L1–L5;
   backup da versão anterior no scratchpad da sessão. Status/título ganharam a marca v2.
+
+## Item 9 (score)
+- `score.sh`: nenhum hard-fail. `src/core` citando "asaas": 12 arquivos (linha de base 14). Os que
+  restam carregam só nomes legados mapeados para persistência ou fixados por assert (ver itens 1–3):
+  `types.ts`/`ports.ts`/`console.ts` (campos e repo `asaas*` ↔ colunas `asaas_*`), `customers.ts`,
+  `receive.ts`, `handleInvoice.ts`, `reconcileDaily.ts`, `usecases/console.ts` (campos `asaasPaymentId`/
+  `asaasCustomerId` e chaves de detalhe de exceção já gravadas), `processAsaasEvents.ts` + `index.ts`
+  (nome do caso de uso, 38 referências em testes), `watchdog.ts` (chaves `ASAAS_*` de `app_config`),
+  `notify.ts` (texto do e-mail descreve o provedor atual). Nenhum importa tipo ou client do Asaas.
+- Goal.md item 5 (S0.1 Odoo somente-leitura de verdade) **não** está no plano de 9 itens e a regra
+  desta fase proíbe chamar serviço real: fica como pendência para a fase seguinte.

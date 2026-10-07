@@ -19,5 +19,5 @@ export const RAW_PAYLOAD_MAX = 20_000;
 export const MAX_MONEY_INT_DIGITS = 12;       // numeric(14,2)
 export const TOLERANCE_MAX_BRL = "5.00";          // acima disso é política de write-off (Q3), não tolerância
 export const SWEEP_FAILURES_BEFORE_SKIP = 3;      // fatura que o Odoo recusa (5xx) N ticks seguidos vira exceção e a varredura segue
-export const OVERDUE_RECHECK_DAYS = 2;            // reconcile relê no Asaas cobranças abertas vencidas há mais de N dias
+export const OVERDUE_RECHECK_DAYS = 2;            // reconcile relê no gateway cobranças abertas vencidas há mais de N dias
 export const WIZARD_TIMEOUT_MS = 60_000;          // o wizard pode demorar; retry antes de o Odoo terminar duplicaria
