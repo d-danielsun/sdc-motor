@@ -26,20 +26,20 @@ export function isBusinessHoursBrt(now: Date): boolean {
 }
 
 export async function watchdog(deps: Deps): Promise<WatchdogSummary> {
-  const { repo, asaas, clock } = deps;
+  const { repo, gateway, clock } = deps;
   const now = clock.now();
   const s: WatchdogSummary = { at: now.toISOString(), ok: false, interrupted: false, reactivated: false, penalizedDelta: 0, staleHeartbeat: false, apiKeyDays: null, travadas: {}, alertas: {} };
   const consoleUrl = await repo.config.get<string | null>("CONSOLE_PUBLIC_URL").catch(() => null);
 
   const webhookId = await repo.config.get<string | null>("ASAAS_WEBHOOK_ID");
-  const wh = webhookId ? await asaas.getWebhook(webhookId) : null;
+  const wh = webhookId ? await gateway.getEventQueue(webhookId) : null;
   if (wh) {
     if (wh.interrupted) {
       s.interrupted = true;
       const exc = await repo.exceptions.openOnce({ type: "queue_interrupted", refTable: "asaas_webhooks", detail: { webhookId: wh.id, penalizedRequestsCount: wh.penalizedRequestsCount } });
       const last = await repo.config.get<string | null>("ASAAS_REACTIVATED_AT");
       if (!last || now.getTime() - new Date(last).getTime() >= HOUR) {
-        await asaas.updateWebhook(wh.id, { interrupted: false });
+        await gateway.resumeEventQueue(wh.id);
         await repo.config.set("ASAAS_REACTIVATED_AT", now.toISOString());
         s.reactivated = true;
       }

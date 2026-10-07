@@ -56,55 +56,6 @@ export interface OdooPaymentResult {
   paymentState: string | null;
 }
 
-// ── Asaas ────────────────────────────────────────────────────────────────────
-export interface AsaasCustomer {
-  id: string;
-  name: string;
-  cpfCnpj: string | null;
-  email: string | null;
-  externalReference: string | null;
-  notificationDisabled: boolean;
-}
-export interface AsaasPayment {
-  id: string;
-  customer: string;
-  status: string;               // PENDING | CONFIRMED | RECEIVED | RECEIVED_IN_CASH | OVERDUE | REFUNDED | ...
-  billingType: string;
-  value: Money;
-  netValue: Money | null;
-  originalValue: Money | null;  // preenchido quando value inclui juros/multa
-  interestValue: Money | null;
-  dueDate: string;
-  paymentDate: string | null;
-  clientPaymentDate: string | null;
-  creditDate: string | null;
-  /** Previsão de crédito. É por ela que o reconcile faz o segundo passe (`estimatedCreditDate[ge]`),
-   *  porque boleto pago numa quinta e creditado na terça sai da janela de `paymentDate`. */
-  estimatedCreditDate: string | null;
-  externalReference: string | null;
-  bankSlipUrl: string | null;
-  invoiceUrl: string | null;
-  invoiceNumber: string | null;
-  nossoNumero: string | null;
-  deleted: boolean;
-}
-export interface AsaasWebhookEvent {
-  id: string;
-  event: string;
-  dateCreated: string;
-  payment: AsaasPayment;
-}
-export interface AsaasWebhook {
-  id: string;
-  name: string;
-  url: string;
-  enabled: boolean;
-  interrupted: boolean;
-  penalizedRequestsCount: number;
-  sendType: string;
-  events: string[];
-}
-
 // ── Estado do motor ──────────────────────────────────────────────────────────
 export interface Charge {
   id: number;

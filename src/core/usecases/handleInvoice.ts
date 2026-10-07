@@ -7,7 +7,8 @@ import { ensureCustomer } from "../customers.js";
 import { toCents } from "../money.js";
 import type { Deps } from "../ports.js";
 import { isTransient } from "../ports.js";
-import { RECEIVED_STATUSES, receivePayment } from "../receive.js";
+import { isReceivedStatus } from "../gateway.js";
+import { receivePayment } from "../receive.js";
 import type { Charge, OdooInvoice, OdooInvoiceLine } from "../types.js";
 import { externalRefForLine } from "../types.js";
 
@@ -66,12 +67,12 @@ async function handleLocked(deps: Deps, inv: OdooInvoice, out: InvoiceOutcome): 
       if (!customerId) { out.blocked++; continue; }   // exceção já aberta em ensureCustomer; a varredura não para por isso
       const ref = externalRefForLine(line.id);
       // 3) idempotência pela fonte de verdade: boleto vivo com esta referência é adotado, não duplicado
-      const adopted = await deps.asaas.findPaymentByExternalRef(ref);
+      const adopted = await deps.gateway.findChargeByExternalRef(ref);
       if (adopted && (toCents(adopted.value) !== toCents(line.amountResidual) || adopted.dueDate !== line.dateMaturity || adopted.externalReference !== ref)) {
         await repo.exceptions.openOnce({ type: "amount_divergent", refTable: "account.move.line", refId: line.id, detail: { stage: "ida", reason: "já existe boleto no Asaas com esta referência, mas com valor/vencimento diferentes da parcela", asaasPaymentId: adopted.id, value: adopted.value, dueDate: adopted.dueDate, expected: line.amountResidual, expectedDueDate: line.dateMaturity, odooId: inv.id } });
         out.failed++; continue;
       }
-      const payment = adopted ?? (await deps.asaas.createPayment({
+      const payment = adopted ?? (await deps.gateway.createCharge({
         customer: customerId, value: line.amountResidual, dueDate: line.dateMaturity, externalReference: ref,
         description: `${inv.name} parcela ${k}/${total}`.slice(0, 500),
       }));
@@ -92,16 +93,16 @@ async function handleLocked(deps: Deps, inv: OdooInvoice, out: InvoiceOutcome): 
 }
 
 async function cancelCharge(deps: Deps, c: Charge, inv: OdooInvoice, out: InvoiceOutcome, reason: string): Promise<void> {
-  const { repo, asaas } = deps;
+  const { repo, gateway } = deps;
   if (c.status === "received" || c.status === "settled") {
     await repo.exceptions.openOnce({ type: "reversal_pending", refTable: "charges", refId: c.id, detail: { invoice: inv.name, reason: `${reason} — mas o boleto já foi pago` } });
     return;
   }
   if (!OPEN_STATUSES.includes(c.status) || !c.asaasPaymentId) return;
   try {
-    const live = await asaas.getPayment(c.asaasPaymentId);
+    const live = await gateway.getCharge(c.asaasPaymentId);
     if (live && !live.deleted) {
-      if ((RECEIVED_STATUSES as readonly string[]).includes(live.status)) {
+      if (isReceivedStatus(live.status)) {
         // Dinheiro já entrou: isso é uma baixa (talvez em andamento no worker, talvez manual no Odoo) — não um estorno.
         const r = await receivePayment(deps, live, "reconcile");
         if (r === "received" || r === "already" || r === "busy") return;
@@ -112,7 +113,7 @@ async function cancelCharge(deps: Deps, c: Charge, inv: OdooInvoice, out: Invoic
         await repo.exceptions.openOnce({ type: "reversal_pending", refTable: "charges", refId: c.id, detail: { invoice: inv.name, reason: `${reason} — mas o boleto já está CONFIRMED no Asaas (compensando)`, asaasPaymentId: live.id } });
         return;
       }
-      await asaas.deletePayment(c.asaasPaymentId);
+      await gateway.cancelCharge(c.asaasPaymentId);
     }
     await repo.charges.transition(c.id, ["created", "confirmed"], "cancelled");
     out.cancelled++;

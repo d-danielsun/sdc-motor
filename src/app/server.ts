@@ -3,7 +3,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { Hono } from "hono";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { bodyLimit } from "hono/body-limit";
-import { normalizeAsaasEvent } from "../core/asaasPayload.js";
+import { normalizeAsaasEvent } from "../adapters/asaas/payload.js";
 import { RAW_PAYLOAD_MAX } from "../core/limits.js";
 import type { Repo } from "../core/ports.js";
 

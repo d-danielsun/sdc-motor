@@ -1,5 +1,6 @@
 // Monta as dependências reais a partir do ambiente. Único lugar que conhece env + adaptadores concretos.
 import { AsaasHttpClient } from "../adapters/asaas/client.js";
+import { AsaasGateway } from "../adapters/asaas/gateway.js";
 import { systemClock } from "../adapters/clock.js";
 import { createConsoleQueries } from "../adapters/db/console.js";
 import { DEFAULT_DATABASE_URL, createLockPool, createPool } from "../adapters/db/pool.js";
@@ -60,10 +61,10 @@ export function buildNotifier(env: Env, log = jsonLog): Notifier {
   return createResendNotifier({ apiKey: env.RESEND_API_KEY, from: env.ALERT_FROM, para: env.ALERT_EMAIL });
 }
 
-export function buildDeps(env: Env): { deps: Deps; queries: ConsoleQueries; pool: ReturnType<typeof createPool>; close: () => Promise<void> } {
+export function buildDeps(env: Env): { deps: Deps; asaas: AsaasHttpClient; queries: ConsoleQueries; pool: ReturnType<typeof createPool>; close: () => Promise<void> } {
   const pool = createPool(env.DATABASE_URL);
   const repo = createPgRepo(pool, createLockPool(env.DATABASE_URL));
   const asaas = new AsaasHttpClient({ url: env.ASAAS_URL, apiKey: env.ASAAS_API_KEY, audit: repo.audit });
   const odoo = new OdooJson2Client({ url: env.ODOO_URL, db: env.ODOO_DB || null, apiKey: env.ODOO_API_KEY, audit: repo.audit });
-  return { deps: { repo, odoo, asaas, clock: systemClock, log: jsonLog, notify: buildNotifier(env) }, queries: createConsoleQueries(pool), pool, close: () => pool.end() };
+  return { deps: { repo, odoo, gateway: new AsaasGateway(asaas), clock: systemClock, log: jsonLog, notify: buildNotifier(env) }, asaas, queries: createConsoleQueries(pool), pool, close: () => pool.end() };
 }

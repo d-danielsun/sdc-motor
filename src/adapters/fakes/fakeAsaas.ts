@@ -1,7 +1,6 @@
 // Asaas em memória, com o comportamento que importa: ids, status, eventos de webhook e fila interrompível.
 import { money } from "../../core/money.js";
-import type { AsaasClient } from "../../core/ports.js";
-import type { AsaasCustomer, AsaasPayment, AsaasWebhook, AsaasWebhookEvent } from "../../core/types.js";
+import type { AsaasClient, AsaasCustomer, AsaasPayment, AsaasWebhook, AsaasWebhookEvent } from "../asaas/types.js";
 
 export class FakeAsaas implements AsaasClient {
   customers = new Map<string, AsaasCustomer>();

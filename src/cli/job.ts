@@ -20,7 +20,7 @@ function flags(argv: string[]): Record<string, string> {
 
 const name = process.argv[2];
 const env = readEnv();
-const { deps, pool, close } = buildDeps(env);
+const { deps, asaas, pool, close } = buildDeps(env);
 await assertMigrated(pool).catch((e) => { console.error(String((e as Error).message)); process.exit(1); });
 await assertLeitura(pool).catch((e) => { console.error(String((e as Error).message)); process.exit(1); });
 
@@ -31,9 +31,9 @@ if (name === "register-asaas-webhook") {
   if (!url || !email) { console.error("uso: WEBHOOK_PUBLIC_URL=https://…/webhook-asaas ALERT_EMAIL=… npm run job -- register-asaas-webhook"); exitCode = 2; }
   else {
     const existing = await deps.repo.config.get<string | null>("ASAAS_WEBHOOK_ID");
-    if (existing && (await deps.asaas.getWebhook(existing))) jsonLog("webhook já registrado", { id: existing });
+    if (existing && (await asaas.getWebhook(existing))) jsonLog("webhook já registrado", { id: existing });
     else {
-      const wh = await deps.asaas.createWebhook({ name: "Salvei motor de cobrança", url, email, authToken: env.ASAAS_WEBHOOK_TOKEN, events: [...ASAAS_EVENTS] });
+      const wh = await asaas.createWebhook({ name: "Salvei motor de cobrança", url, email, authToken: env.ASAAS_WEBHOOK_TOKEN, events: [...ASAAS_EVENTS] });
       await deps.repo.config.set("ASAAS_WEBHOOK_ID", wh.id);
       jsonLog("webhook registrado", { id: wh.id, url: wh.url, events: wh.events.length });
     }

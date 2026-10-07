@@ -1,8 +1,8 @@
 // Asaas API v3 — header access_token (não é Bearer). Contrato: 02-SPEC.md §Contrato Asaas.
-import { asaasId, normalizeAsaasPayment } from "../../core/asaasPayload.js";
+import { asaasId, normalizeAsaasPayment } from "./payload.js";
 import { toCents } from "../../core/money.js";
-import type { AsaasClient, Repo } from "../../core/ports.js";
-import type { AsaasCustomer, AsaasPayment, AsaasWebhook } from "../../core/types.js";
+import type { Repo } from "../../core/ports.js";
+import type { AsaasClient, AsaasCustomer, AsaasPayment, AsaasWebhook } from "./types.js";
 import { HttpError, USER_AGENT, audited, httpJson } from "../http.js";
 
 export interface AsaasConfig { url: string; apiKey: string; fetchImpl?: typeof fetch; audit?: Repo["audit"] | null }

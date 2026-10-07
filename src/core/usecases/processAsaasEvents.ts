@@ -1,18 +1,18 @@
-// Worker da volta (1 min): consome webhook_events reservados, RELÊ o pagamento no Asaas (o webhook é gatilho,
-// não verdade — sem assinatura, qualquer um com o token forja um POST) e aplica a máquina de estados com transições atômicas.
-import { normalizeAsaasEvent } from "../asaasPayload.js";
+// Worker da volta (1 min): consome os avisos do gateway reservados (tabela webhook_events), RELÊ a cobrança viva no
+// gateway (o aviso é gatilho, não verdade — sem assinatura, qualquer um com o token forja um POST) e aplica a máquina de estados com transições atômicas.
+import { type GatewayCharge, isReceivedStatus } from "../gateway.js";
 import { fromStatesFor } from "../charges.js";
-import { ASAAS_EVENT_BATCH } from "../limits.js";
+import { GATEWAY_EVENT_BATCH } from "../limits.js";
 import type { Deps } from "../ports.js";
 import { isTransient } from "../ports.js";
-import { RECEIVED_STATUSES, findChargeForPayment, receivePayment } from "../receive.js";
-import type { AsaasPayment, ProcessStatus } from "../types.js";
+import { findChargeForPayment, receivePayment } from "../receive.js";
+import type { ProcessStatus } from "../types.js";
 import { backoff } from "./retry.js";
 
 export async function processAsaasEvents(deps: Deps, o: { limit?: number } = {}): Promise<{ done: number; ignored: number; errors: number }> {
   const { repo, clock } = deps;
   const out = { done: 0, ignored: 0, errors: 0 };
-  for (const stored of await repo.asaasEvents.pending(o.limit ?? ASAAS_EVENT_BATCH, clock.now())) {
+  for (const stored of await repo.asaasEvents.pending(o.limit ?? GATEWAY_EVENT_BATCH, clock.now())) {
     const posse = { claimToken: stored.claimToken };
     // `touch` já diz se a reserva é nossa: seguir sem checar era gastar chamada externa (e, no
     // caminho do erro, abrir exceção) por um evento que já tem outro dono.
@@ -41,7 +41,7 @@ export async function processAsaasEvents(deps: Deps, o: { limit?: number } = {})
           continue;
         }
         await repo.exceptions.openOnce({ type: "payment_unmatched", refTable: "webhook_events", refId: stored.id, detail: { reason: isTransient(e) ? "retries esgotados" : "erro definitivo", event: stored.eventType, asaasPaymentId: stored.asaasPaymentId, error: (e as Error).message } });
-        deps.log("evento asaas em erro", { eventId: stored.asaasEventId, error: (e as Error).message });
+        deps.log("evento do gateway em erro", { eventId: stored.asaasEventId, error: (e as Error).message });
         out.errors++;
       }
     }
@@ -49,61 +49,62 @@ export async function processAsaasEvents(deps: Deps, o: { limit?: number } = {})
   return out;
 }
 
-const STATE_EVENTS = new Set(["PAYMENT_CONFIRMED", "PAYMENT_RECEIVED", "PAYMENT_UPDATED", "PAYMENT_DELETED", "PAYMENT_BANK_SLIP_CANCELLED", "PAYMENT_RESTORED", "PAYMENT_REFUNDED", "PAYMENT_PARTIALLY_REFUNDED", "PAYMENT_RECEIVED_IN_CASH_UNDONE"]);
+/** Avisos que mexem em estado; `overdue` só é registrado, o resto é ignorado. */
+const STATE_KINDS = new Set(["confirmed", "received", "updated", "deleted", "slip_cancelled", "restored", "reversal"]);
 
 async function applyEvent(deps: Deps, payload: unknown, storedId: number): Promise<ProcessStatus> {
-  const { repo, asaas } = deps;
-  const ev = normalizeAsaasEvent(payload);
+  const { repo, gateway } = deps;
+  const ev = gateway.parseSettlementEvent(payload);
   if (!ev) return "ignored";
-  if (!STATE_EVENTS.has(ev.event)) return ev.event === "PAYMENT_OVERDUE" ? "done" : "ignored";
+  if (!STATE_KINDS.has(ev.kind)) return ev.kind === "overdue" ? "done" : "ignored";
 
-  // Fonte de verdade: o objeto vivo no Asaas. Evento forjado ou pagamento que sumiu → não muda nada.
-  const p: AsaasPayment | null = await asaas.getPayment(ev.payment.id);
+  // Fonte de verdade: a cobrança viva no gateway. Aviso forjado ou cobrança que sumiu → não muda nada.
+  const p: GatewayCharge | null = await gateway.getCharge(ev.gatewayChargeId);
   if (!p) {
-    await repo.exceptions.openOnce({ type: "payment_unmatched", refTable: "webhook_events", refId: storedId, detail: { reason: "pagamento do evento não existe no Asaas (evento forjado ou apagado)", asaasPaymentId: ev.payment.id, event: ev.event } });
+    await repo.exceptions.openOnce({ type: "payment_unmatched", refTable: "webhook_events", refId: storedId, detail: { reason: `pagamento do evento não existe no ${gateway.name === "asaas" ? "Asaas" : gateway.name} (evento forjado ou apagado)`, asaasPaymentId: ev.gatewayChargeId, event: ev.rawType } });
     return "error";
   }
   const found = await findChargeForPayment(deps, p);
   const charge = found === "conflict" ? null : found;
 
-  switch (ev.event) {
-    case "PAYMENT_CONFIRMED": {
+  switch (ev.kind) {
+    case "confirmed": {
       if (!charge) return "ignored";
       if (p.status === "CONFIRMED") await repo.charges.transition(charge.id, fromStatesFor("confirmed"), "confirmed", { asaasPaymentId: p.id });
       return "done";
     }
-    case "PAYMENT_RECEIVED": {
+    case "received": {
       const r = await receivePayment(deps, p, "webhook");
       if (r === "busy") throw Object.assign(new Error("cobrança em uso por outra execução"), { transient: true });   // volta pra fila
       if (r === "foreign") return "ignored";
       return r === "unmatched" || r === "wizard_failed" || r === "needs_review" ? "error" : "done";
     }
-    case "PAYMENT_UPDATED": {
+    case "updated": {
       if (!charge) return "ignored";
       if (p.dueDate !== charge.dueDate || p.value !== charge.amount) {
-        await repo.exceptions.openOnce({ type: "amount_divergent", refTable: "charges", refId: charge.id, detail: { reason: "cobrança alterada no Asaas fora do motor", asaasPaymentId: p.id, dueDate: p.dueDate, value: p.value, expectedDueDate: charge.dueDate, expectedValue: charge.amount } });
+        await repo.exceptions.openOnce({ type: "amount_divergent", refTable: "charges", refId: charge.id, detail: { reason: `cobrança alterada no ${gateway.name === "asaas" ? "Asaas" : gateway.name} fora do motor`, asaasPaymentId: p.id, dueDate: p.dueDate, value: p.value, expectedDueDate: charge.dueDate, expectedValue: charge.amount } });
       }
       return "done";
     }
-    case "PAYMENT_DELETED": {
+    case "deleted": {
       if (!charge) return "ignored";
-      if (!p.deleted) { deps.log("PAYMENT_DELETED de cobrança viva no Asaas — ignorado", { asaasPaymentId: p.id }); return "ignored"; }   // replay/forjado: o objeto vivo manda
+      if (!p.deleted) { deps.log("aviso de exclusão de cobrança viva no gateway — ignorado", { asaasPaymentId: p.id, event: ev.rawType }); return "ignored"; }   // replay/forjado: o objeto vivo manda
       await repo.charges.transition(charge.id, fromStatesFor("cancelled"), "cancelled");
       return "done";
     }
-    case "PAYMENT_BANK_SLIP_CANCELLED": {
+    case "slip_cancelled": {
       if (!charge) return "ignored";
-      if (!(RECEIVED_STATUSES as readonly string[]).includes(p.status)) await repo.charges.transition(charge.id, fromStatesFor("cancelled"), "cancelled");
+      if (!isReceivedStatus(p.status)) await repo.charges.transition(charge.id, fromStatesFor("cancelled"), "cancelled");
       return "done";
     }
-    case "PAYMENT_RESTORED": {
+    case "restored": {
       if (!charge) return "ignored";
       if (!p.deleted) await repo.charges.transition(charge.id, ["cancelled"], "created", { asaasPaymentId: p.id });
       return "done";
     }
-    default: {   // REFUNDED / PARTIALLY_REFUNDED / RECEIVED_IN_CASH_UNDONE
+    default: {   // reversal: estorno total/parcial, recebimento em dinheiro desfeito
       if (!charge) return "ignored";
-      await repo.exceptions.openOnce({ type: "reversal_pending", refTable: "charges", refId: charge.id, detail: { event: ev.event, asaasPaymentId: p.id, status: p.status } });
+      await repo.exceptions.openOnce({ type: "reversal_pending", refTable: "charges", refId: charge.id, detail: { event: ev.rawType, asaasPaymentId: p.id, status: p.status } });
       return "done";
     }
   }

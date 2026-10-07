@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { classifyReceipt } from "../../src/core/receive.js";
-import { asaasId, normalizeAsaasEvent, normalizeAsaasPayment } from "../../src/core/asaasPayload.js";
-import type { AsaasPayment } from "../../src/core/types.js";
+import { asaasId, normalizeAsaasEvent, normalizeAsaasPayment } from "../../src/adapters/asaas/payload.js";
+import type { AsaasPayment } from "../../src/adapters/asaas/types.js";
 
 const base: AsaasPayment = {
   id: "pay_1", customer: "cus_1", status: "RECEIVED", billingType: "BOLETO", value: "100.00", netValue: "98.01", originalValue: null, interestValue: null,

@@ -77,7 +77,7 @@ export function createPgRepo(pool: pg.Pool, lockPool: pg.Pool = pool): Repo {
     charges: {
       async getByMoveLine(id) { const r = await one("select * from charges where odoo_move_line_id=$1", [id]); return r ? chargeRow(r) : null; },
       async getByExternalRef(ref) { const r = await one("select * from charges where external_ref=$1", [ref]); return r ? chargeRow(r) : null; },
-      async getByAsaasPayment(id) { const r = await one("select * from charges where asaas_payment_id=$1", [id]); return r ? chargeRow(r) : null; },
+      async getByGatewayCharge(id) { const r = await one("select * from charges where asaas_payment_id=$1", [id]); return r ? chargeRow(r) : null; },
       async listByMove(moveId) { return (await all("select * from charges where odoo_move_id=$1 order by due_date, id", [moveId])).map(chargeRow); },
       async insert(c) {
         try {
